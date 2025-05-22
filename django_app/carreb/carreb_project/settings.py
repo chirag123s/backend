@@ -27,6 +27,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-)owtq3uy9crtigpyrs_j2(+xx#fakxj&0ld!b*%rn70id#1*4c'
 
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY')
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET')
+
+PAYMENT_CURRENCY = os.environ.get('PAYMENT_CURRENCY', 'aud')
+PAYMENT_SUCCESS_URL = os.environ.get('PAYMENT_SUCCESS_URL', 'http://localhost:3000/payment-success')
+PAYMENT_CANCEL_URL = os.environ.get('PAYMENT_CANCEL_URL', 'http://localhost:3000/payment-cancel')
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
@@ -42,9 +50,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'drf_yasg',
     'corsheaders',
     'api',
     'scraper_app',
+    'payments',
 ]
 
 MIDDLEWARE = [
@@ -84,10 +94,10 @@ WSGI_APPLICATION = 'carreb_project.wsgi.application'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
 #DATABASES = {
-#    'default': {
-#        'ENGINE': 'django.db.backends.sqlite3',
-#        'NAME': BASE_DIR / 'db.sqlite3',
-#    }
+#   'default': {
+#       'ENGINE': 'django.db.backends.sqlite3',
+#       'NAME': BASE_DIR / 'db.sqlite3',
+#   }
 #}
 DATABASES = {
     'default': {
@@ -108,6 +118,8 @@ DATABASES = {
     }
 }
 DATABASE_ROUTERS = ['scraper_app.routers.ExternalDBRouter']
+#DATABASE_ROUTERS = []
+
 
 MIGRATION_MODULES = {
     'scraper_app': None,  # 🚫 disables migrations for this app

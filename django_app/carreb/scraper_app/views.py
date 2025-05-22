@@ -3,7 +3,7 @@ from django.shortcuts import render
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.db import transaction
+#from django.db import transaction
 from api.models import Vehicles
 
 from .services import parse_vehicle_engine_spec, parse_vehicle_transmission_spec, parse_vehicle_tailpipe, normalize_liter_string, generate_vehicle_id
@@ -24,6 +24,7 @@ class GVGDataParser(APIView):
             match = re.search(r'(\d+)\s*seat', vehicle.body, re.IGNORECASE)
             seats = int(match.group(1)) if match else None
             body = re.sub(r'\d+\s*door\s*\d+\s*seat\s*', '', vehicle.body, flags=re.IGNORECASE).strip()
+            model = re.sub(vehicle.make_name, "", vehicle.model, flags=re.IGNORECASE).strip()
         
             engine = parse_vehicle_engine_spec(vehicle.engine)
             transmission = parse_vehicle_transmission_spec(vehicle.transmission)
@@ -31,12 +32,12 @@ class GVGDataParser(APIView):
             tailpipe_urban = parse_vehicle_tailpipe(vehicle.tailpipe_urban)
             tailpipe_extra = parse_vehicle_tailpipe(vehicle.tailpipe_extra)
 
-            data = Vehicle.objects.create(
+            data = Vehicles.objects.create(
                 #id = vehicle.id,
                 year = vehicle.year,
                 make = vehicle.make,
                 make_name = vehicle.make_name,
-                model = vehicle.model,
+                model = model,
                 vehicle_class = vehicle.vehicle_class,
                 body = body,
                 doors = doors,
@@ -72,7 +73,7 @@ class GVGDataParser(APIView):
                 noise_data = vehicle.noise_data
             )
             #data.save()
-            v = Vehicle.objects.get(id=data.id)
+            v = Vehicles.objects.get(id=data.id)
             v.vehicle_id = generate_vehicle_id(data.year, data.id )
             v.save()
 
