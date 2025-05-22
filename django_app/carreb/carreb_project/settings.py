@@ -16,6 +16,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Auth0 Configuration
+AUTH0_DOMAIN = os.environ.get('AUTH0_DOMAIN')
+AUTH0_API_IDENTIFIER = os.environ.get('AUTH0_API_IDENTIFIER')
+AUTH0_CLIENT_ID = os.environ.get('AUTH0_CLIENT_ID')
+AUTH0_CLIENT_SECRET = os.environ.get('AUTH0_CLIENT_SECRET')
+
+# Validate Auth0 settings
+if not all([AUTH0_DOMAIN, AUTH0_API_IDENTIFIER]):
+    raise ValueError("Auth0 configuration is incomplete. Check your .env file.")
+
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -55,6 +66,7 @@ INSTALLED_APPS = [
     'api',
     'scraper_app',
     'payments',
+    'authentication',
 ]
 
 MIDDLEWARE = [
@@ -65,11 +77,27 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'authentication.middleware.Auth0ErrorMiddleware', 
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
 ]
 
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'authentication.auth0.Auth0JSONWebTokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',  # Keep for admin
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
+}
+
 ROOT_URLCONF = 'carreb_project.urls'
+
 
 TEMPLATES = [
     {
