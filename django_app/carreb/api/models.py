@@ -97,3 +97,45 @@ class Vehicles(models.Model):
 
     def __str__(self):
         return f"{self.id} {self.year} {self.make} {self.model}"
+
+
+# Car search log
+class CarSearchLog(models.Model):
+    id = models.AutoField(primary_key=True)
+    uid = models.CharField(max_length=50, null=True, blank=True)
+    save_money = models.BooleanField(default=False)
+    greener_car = models.BooleanField(default=False)
+    good_all_rounder = models.BooleanField(default=False)
+    budget = models.DecimalField(max_digits=10, decimal_places=2)
+    state = models.CharField(max_length=5, null=True, blank=True)
+    have_car = models.BooleanField(default=False)
+    make = models.CharField(max_length=100, null=True, blank=True)
+    model = models.CharField(max_length=100, null=True, blank=True)
+    year = models.CharField(max_length=4, null=True, blank=True)
+    engine_type = models.CharField(max_length=100, null=True, blank=True)
+    vehicle_id = models.CharField(max_length=20, null=True, blank=True)
+    ip_address = models.GenericIPAddressField()
+    referral_code = models.CharField(max_length=255, blank=True, null=True)
+    user_agent = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'car_search_logs'
+        
+    def __str__(self):
+        return f"{self.ip_address} - {self.referral_code}"
+    
+
+
+# Vehicle Images
+class VehicleImages(models.Model):
+    id = models.AutoField(primary_key=True)
+    vehicle_id = models.CharField(max_length=20, null=True, blank=True)
+    image_name = models.CharField(max_length=255, null=True, blank=True)
+
+    class Meta:
+        db_table = "vehicle_images"
+
+    def __str__(self):
+        return f"{self.id} {self.year} {self.make} {self.model}"

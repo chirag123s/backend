@@ -1,4 +1,6 @@
 import uuid
+import random
+from django.conf import settings
 from django.db.models import Min
 from django.shortcuts import render
 from rest_framework.views import APIView
@@ -6,443 +8,377 @@ from rest_framework.response import Response
 from rest_framework import status
 from .services import ParseCarDetailsFromGG
 from rest_framework.decorators import api_view
-from .models import CarMakes, CarDetails, States, Vehicles
-from .serializers import CarDetailsSerializer
+from .models import CarMakes, CarDetails, States, Vehicles, CarSearchLog, VehicleImages
+from .serializers import CarDetailsSerializer, VehiclesSerializer, CarSearchLogSerializer
+from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 
-# Import authentication and permissions
-from rest_framework.decorators import permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
-# Note: Comment out these imports until you implement the authentication app
-# from authentication.permissions import HasRequiredScope, requires_scope
-
-import logging
-
-logger = logging.getLogger(__name__)
-
-
-class PraseCDGG(APIView):
-    """
-    File parsing endpoint - typically should be admin-only in production
-    """
-    permission_classes = [IsAuthenticated]  # Protect this endpoint
-    
-    def post(self, request):  # Changed from GET to POST as it's processing file uploads
-        try:
-            file = request.FILES.get('file')
-
-            if not file:
-                return Response(
-                    {"error": "No file uploaded."}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            result = ParseCarDetailsFromGG(file)
-            logger.info(f"File parsed successfully by user {request.user.username}")
-            return Response(result, status=status.HTTP_201_CREATED)
-            
-        except Exception as e:
-            logger.error(f"File parsing error: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "File processing failed"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-
-class StateListView(APIView):
-    """
-    Public endpoint to get list of states
-    """
-    permission_classes = [AllowAny]  # Public endpoint
-    
+class ParseCDGG(APIView):
     def get(self, request):
-        try:
-            states = States.objects.values('state_id', 'short_name', 'name').order_by('name')
-            return Response({"states": list(states)}, status=status.HTTP_200_OK)
-        except Exception as e:
-            logger.error(f"Error fetching states: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch states"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        file = request.FILES.get('file')
 
+        if not file:
+            return Response({"error": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = ParseCarDetailsFromGG(file)
+            return Response(result, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+class StateListView(APIView):
+    def get(self, request):
+        states = States.objects.values('state_id', 'short_name', 'name').order_by('name')
+
+        return Response({"states": list(states)}, status=status.HTTP_201_CREATED)
 
 class GetCarMakesListView(APIView):
-    """
-    Protected endpoint to get car makes
-    """
-    permission_classes = [IsAuthenticated]  # Requires authentication
-    
     def get(self, request):
-        try:
-            # The user is available as request.user (Auth0 user ID)
-            user_id = request.user.username
-            logger.info(f"Car makes requested by user: {user_id}")
-            
-            popular_cars = CarMakes.objects.filter(popular=True).values("car_make_id", "name").order_by('name')
-            all_cars = CarMakes.objects.values("car_make_id", "name").order_by('name')
 
-            # Replace 'car_make_id' with a random UUID
-            popular_cars = [
-                {
-                    "key": str(uuid.uuid4()),  # Generate random UUID
-                    "car_make_id": car["name"],
-                    "name": car["name"]
-                }
-                for car in popular_cars
-            ]
-            
-            all_cars = [
-                {
-                    "key": str(uuid.uuid4()),  # Generate random UUID
-                    "car_make_id": car["name"],
-                    "name": car["name"]
-                }
-                for car in all_cars
-            ]
+        popular_cars = CarMakes.objects.filter(popular=True).values("car_make_id", "name").order_by('name')
+        all_cars = CarMakes.objects.values("car_make_id", "name").order_by('name')
 
-            return Response({
-                "popular": list(popular_cars),
-                "all": list(all_cars)
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car makes: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car makes"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        # Replace 'car_make_id' with a random UUID
+        popular_cars = [
+            {
+                "key": str(uuid.uuid4()),  # Generate random UUID
+                "car_make_id": car["name"],
+                "name": car["name"]
+            }
+            for car in popular_cars
+        ]
+        # Replace 'car_make_id' with a random UUID
+        all_cars = [
+            {
+                "key": str(uuid.uuid4()),  # Generate random UUID
+                "car_make_id": car["name"],
+                "name": car["name"]
+            }
+            for car in all_cars
+        ]
 
+        return Response({
+            "popular": list(popular_cars),
+            "all": list(all_cars)
+        })
 
 class GetCarModelListView(APIView):
-    """
-    Protected endpoint to get car models based on make
-    """
-    permission_classes = [IsAuthenticated]
-    
+    #def geT(self, request, make_name):
     def post(self, request):
-        try:
-            car_make = request.data.get('make')
-            
-            if not car_make:
-                return Response(
-                    {"error": "Make parameter is required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            if car_make.startswith("p-"):
-                car_make = car_make[2:]  # Remove the first two characters
+        car_make = request.data.get('make')
+        
+        if car_make.startswith("p-"):
+            car_make = car_make[2:]  # Remove the first two characters
 
-            car_models = (
-                Vehicles.objects
-                .filter(make_name__icontains=car_make)
-                .values("model")
-                .annotate(id=Min("id"))  # Ensures distinct entries
-                .order_by("model")
-            )
-            
-            return Response({"models": list(car_models)}, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car models: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car models"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        car_models = (
+            Vehicles.objects
+            .filter(make_name__icontains=car_make)
+            .values("model")
+            .annotate(id=Min("id"))  # Ensures distinct entries by selecting the smallest ID for each name
+            .order_by("model")
+        )
+        return Response({"models": list(car_models)})
 
 
+# Return Year list based on vehicle Make and Model
 class GetCarYearListView(APIView):
-    """
-    Protected endpoint to get car years based on make and model
-    """
-    permission_classes = [IsAuthenticated]
-    
+    #def geT(self, request, make_name):
     def post(self, request):
-        try:
-            car_make = request.data.get('make')
-            car_model = request.data.get('model')
-            
-            if not car_make or not car_model:
-                return Response(
-                    {"error": "Make and model parameters are required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            if car_make.startswith("p-"):
-                car_make = car_make[2:]  # Remove the first two characters
+        
+        car_make = request.data.get('make')
+        car_model = request.data.get('model')
+        
+        if car_make.startswith("p-"):
+            car_make = car_make[2:]  # Remove the first two characters
 
-            car_years = (
-                Vehicles.objects
-                .filter(make_name__icontains=car_make, model__icontains=car_model)
-                .values("year")
-                .annotate(id=Min("id"))  # Ensures distinct entries
-                .order_by("-year")
-            )
-            
-            return Response({"years": list(car_years)}, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car years: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car years"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        car_years = (
+            Vehicles.objects
+            .filter(make_name__icontains=car_make, model__icontains=car_model)
+            .values("year")
+            .annotate(id=Min("id"))  # Ensures distinct entries by selecting the smallest ID for each name
+            .order_by("-year")
+        )
+        return Response({"years": list(car_years)})
 
-
+# Return Engine Type list based on vehicle Make, Model and Year
 class GetCarEngineTypeListView(APIView):
-    """
-    Protected endpoint to get engine types based on make, model, and year
-    """
-    permission_classes = [IsAuthenticated]
-    
+    #def geT(self, request, make_name):
     def post(self, request):
-        try:
-            car_make = request.data.get('make')
-            car_model = request.data.get('model')
-            car_year = request.data.get('year')
-            
-            if not all([car_make, car_model, car_year]):
-                return Response(
-                    {"error": "Make, model, and year parameters are required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            if car_make.startswith("p-"):
-                car_make = car_make[2:]  # Remove the first two characters
+        
+        car_make = request.data.get('make')
+        car_model = request.data.get('model')
+        car_year = request.data.get('year')
+        
+        if car_make.startswith("p-"):
+            car_make = car_make[2:]  # Remove the first two characters
 
-            car_engine_types = (
-                Vehicles.objects
-                .filter(make_name__icontains=car_make, model__icontains=car_model, year__icontains=car_year)
-                .values("engine_type")
-                .annotate(id=Min("id"))  # Ensures distinct entries
-                .order_by("engine_type")
-            )
-            
-            return Response({"engine_types": list(car_engine_types)}, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching engine types: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch engine types"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
+        car_engine_types = (
+            Vehicles.objects
+            .filter(make_name__icontains=car_make, model__icontains=car_model, year__icontains=car_year)
+            .values("engine_type")
+            .annotate(id=Min("id"))  # Ensures distinct entries by selecting the smallest ID for each name
+            .order_by("engine_type")
+        )
+        return Response({"engine_types": list(car_engine_types)})
+    
 
 class CarVariantListView(APIView):
-    """
-    Protected endpoint to get car variants
-    """
-    permission_classes = [IsAuthenticated]
-    
+    #def get(self, request, make_name, model_name):
     def post(self, request):
-        try:
-            car_make = request.data.get('make')
-            car_model = request.data.get('model')
-            
-            if not car_make or not car_model:
-                return Response(
-                    {"error": "Make and model parameters are required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
-            if car_make.startswith("p-"):
-                car_make = car_make[2:] 
 
-            car_variants = (
-                CarDetails.objects
-                .filter(make__icontains=car_make, family__icontains=car_model)
-                .values("variant")
-                .annotate(car_model_id=Min("car_model_id"))
-                .order_by("variant")
-            )
+        car_make = request.data.get('make')
+        car_model = request.data.get('model')
+    
+        if car_make.startswith("p-"):
+            car_make = car_make[2:] 
 
-            car_variants = [
-                {
-                    "car_model_id": car["car_model_id"],
-                    "variant": 'no variant' if (car["variant"] == '') else car["variant"],
-                }
-                for car in car_variants
-            ]
+        car_variants = (
+            CarDetails.objects
+            .filter(make__icontains=car_make, family__icontains=car_model)
+            .values("variant")
+            .annotate(car_model_id=Min("car_model_id"))
+            .order_by("variant")
+        )
 
-            return Response({"variants": list(car_variants)}, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car variants: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car variants"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        car_variants = [
+            {
+                "car_model_id": car["car_model_id"],
+                "variant": 'no variant' if (car["variant"] == '') else car["variant"],
+            }
+            for car in car_variants
+        ]
 
+        return Response({"variants": list(car_variants)})
 
 class CarSeriesListView(APIView):
-    """
-    Protected endpoint to get car series
-    """
-    permission_classes = [IsAuthenticated]
-    
     def post(self, request):
-        try:
-            car_make = request.data.get('make')
-            car_model = request.data.get('model')
-            car_variant = request.data.get('variant')
-            
-            if not all([car_make, car_model, car_variant]):
-                return Response(
-                    {"error": "Make, model, and variant parameters are required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
 
-            if car_make.startswith("p-"):
-                car_make = car_make[2:]  # Remove the first two characters
+        car_make = request.data.get('make')
+        car_model = request.data.get('model')
+        car_variant = request.data.get('variant')
+        #car_variant = '' if (car_variant == 'no variant') else car_variant
 
-            if car_variant == 'no variant':
-                car_series = (
-                    CarDetails.objects
-                    .filter(make__icontains=car_make, family__icontains=car_model, variant__exact='')
-                    .values("series")
-                    .annotate(car_model_id=Min("car_model_id"))
-                    .order_by("series")
-                )
-            else:
-                car_series = (
-                    CarDetails.objects
-                    .filter(make__icontains=car_make, family__icontains=car_model, variant__icontains=car_variant)
-                    .values("series")
-                    .annotate(car_model_id=Min("car_model_id"))
-                    .order_by("series")
-                )
+        if car_make.startswith("p-"):
+            car_make = car_make[2:]  # Remove the first two characters
 
-            return Response({"series": list(car_series)}, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car series: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car series"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        if (car_variant == 'no variant'):
+            car_series = (
+                CarDetails.objects
+                .filter(make__icontains=car_make, family__icontains=car_model, variant__exact='')
+                .values("series")
+                .annotate(car_model_id=Min("car_model_id"))
+                .order_by("series")
             )
+        else:
+            car_series = (
+                CarDetails.objects
+                .filter(make__icontains=car_make, family__icontains=car_model, variant__icontains=car_variant)
+                .values("series")
+                .annotate(car_model_id=Min("car_model_id"))
+                .order_by("series")
+            )
+
+        return Response({"series": list(car_series)})        
 
 
 class CarMatchesListView(APIView):
-    """
-    Protected endpoint with scope requirement to get car matches
-    """
-    permission_classes = [IsAuthenticated]
-    # Uncomment when you implement the authentication app:
-    # permission_classes = [IsAuthenticated, HasRequiredScope]
-    # required_scopes = ['read:cars']  # Requires 'read:cars' scope
-    
     def post(self, request):
-        try:
-            car_make = request.data.get('make')
-            car_model = request.data.get('model')
-            car_variant = request.data.get('variant')
-            car_series = request.data.get('series')
 
-            if not all([car_make, car_model, car_variant, car_series]):
-                return Response(
-                    {"error": "Make, model, variant, and series parameters are required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        car_make = request.data.get('make')
+        car_model = request.data.get('model')
+        car_variant = request.data.get('variant')
+        car_series = request.data.get('series')
 
-            if car_make.startswith("p-"):
-                car_make = car_make[2:]  # Remove the first two characters
+        if car_make.startswith("p-"):
+            car_make = car_make[2:]  # Remove the first two characters
 
-            if car_variant == 'no variant':
-                matches = (
-                    CarDetails.objects
-                    .filter(make__icontains=car_make, family__icontains=car_model, variant__exact='', series__icontains=car_series)
-                    .all()
-                )
-            else:
-                matches = (
-                    CarDetails.objects
-                    .filter(make__icontains=car_make, family__icontains=car_model, variant__icontains=car_variant, series__icontains=car_series)
-                    .all()
-                )
-            
-            serializer = CarDetailsSerializer(matches, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car matches: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car matches"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-
-class CarSuggestionListView(APIView):
-    """
-    Protected endpoint to get car suggestions
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def post(self, request):
-        try:
-            car_id = request.data.get('car_id')
-            
-            if not car_id:
-                return Response(
-                    {"error": "car_id parameter is required"}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Get the car to base suggestions on
+        if (car_variant == 'no variant'):
             matches = (
                 CarDetails.objects
-                .filter(car_model_id__icontains=car_id)
-                .all()[:1]
+                .filter(make__icontains=car_make, family__icontains=car_model, variant__exact='', series__icontains=car_series)
+                .all()
             )
+        else:
+            matches = (
+                CarDetails.objects
+                .filter(make__icontains=car_make, family__icontains=car_model, variant__icontains=car_variant, series__icontains=car_series)
+                .all()
+            )
+        
+        serializer = CarDetailsSerializer(matches, many=True)
+        return Response(serializer.data)
+    
+# Get suggested cars
+class CarSuggestionListView(APIView):
+    
+    def post(self, request):
 
-            if not matches:
-                return Response(
-                    {"error": "Car not found"}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
+        car_id = request.data.get('car_id')
 
-            # Get suggestions based on the first match
-            match = matches[0]
+        matches = (
+            CarDetails.objects
+            .filter(car_model_id__icontains=car_id)
+            .all()[:1]
+        )
+
+        for match in matches:
             suggestions = (
                 CarDetails.objects
                 .filter(style__icontains=match.style)
-                .exclude(car_model_id=car_id)  # Exclude the original car
                 .all()[:5]
             )
-            
-            serializer = CarDetailsSerializer(suggestions, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.error(f"Error fetching car suggestions: {str(e)}", exc_info=True)
-            return Response(
-                {"error": "Failed to fetch car suggestions"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 
-
-# Test endpoints for authentication
-class TestAuthView(APIView):
-    """
-    Test endpoint to verify authentication is working
-    """
-    permission_classes = [IsAuthenticated]
+        #WHERE style='4D SPORTBACK' AND engine='TURBO DIRECT F/INJ' AND transmission='7 SP AUTO S-TRONIC'
+        
+        serializer = CarDetailsSerializer(suggestions, many=True)
+        return Response(serializer.data) 
     
-    def get(self, request):
-        return Response({
-            'message': 'Hello authenticated user!',
-            'user_id': request.user.username,
-            'email': getattr(request.user, 'email', 'N/A'),
-            'is_authenticated': request.user.is_authenticated
-        }, status=status.HTTP_200_OK)
 
 
-class TestPublicView(APIView):
-    """
-    Test endpoint that doesn't require authentication
-    """
-    permission_classes = [AllowAny]
+# Get suggested match
+class GetCarMatchView(APIView):
     
-    def get(self, request):
-        return Response({
-            'message': 'Hello from public endpoint!',
-            'is_authenticated': request.user.is_authenticated if hasattr(request, 'user') else False
-        }, status=status.HTTP_200_OK)
+    def post(self, request, *args, **kwargs):
+
+        save_money = request.data.get('save_money')
+        greener_car = request.data.get('greener_car')
+        good_all_rounder = request.data.get('good_all_rounder')
+        budget = round(float(request.data.get('budget')), 2) if (request.data.get('budget')) else 0
+        state = request.data.get('state')
+        have_car = request.data.get('have_car')
+        make = request.data.get('make')
+        model = request.data.get('model')
+        year = request.data.get('year')
+        engine_type = request.data.get('engine_type')
+        #return Response({"data": request.data }, status=status.HTTP_201_CREATED)
+    
+        if make.startswith("p-"):
+            make = make[2:]  # Remove the first two characters
+
+        """
+        match = (
+            Vehicles.objects
+            .filter(make_name=make, model=model, year=year, engine_type=engine_type)
+            # .all()[:1]
+        )
+
+        if match: 
+            serializer = VehiclesSerializer(match, many=True)
+            return Response({"data": serializer.data}, status=status.HTTP_201_CREATED)
+            
+        else:
+            return Response({"data": 'none'}, status=status.HTTP_201_CREATED)"""
+
+        ip = self.get_client_ip(request)
+        ref = request.data.get('ref') or request.query_params.get('ref')
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+
+        log = CarSearchLog.objects.create(
+            uid=str(uuid.uuid4()),
+            save_money=save_money,
+            greener_car=greener_car,
+            good_all_rounder=good_all_rounder,
+            budget=budget,
+            state=state,
+            have_car=have_car,
+            make=make,
+            model=model,
+            year=year,
+            engine_type=engine_type,
+            ip_address=ip,
+            referral_code=ref,
+            user_agent=user_agent
+        )
+
+        #serializer = CarSearchLogSerializer(log)
+        #return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        response = Response({'status': 'ok', 'crb_uid': log.uid}, status=status.HTTP_200_OK)
+        response.set_cookie(
+            key='crb_uid',
+            value=log.uid,
+            httponly=False,       # Set to False if you want client-side access
+            secure=False,           #settings.COOKIE_SECURE,         # Set to True if using HTTPS
+            samesite='Lax',       # Or 'Strict'/'None'
+            max_age=60 * 60 * 24,  # 1 day
+            path='/'
+        )
+        response['Access-Control-Allow-Credentials'] = 'true'
+        return response
+    
+    def get_client_ip(self, request):
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0].strip()
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+
+
+# Get suggested match
+class GetCarMatchBySIDView(APIView):
+    def post(self, request):
+        search_id = request.data.get('sid')
+        have_car = False
+        data = {}
+
+        try:
+            search_log = CarSearchLog.objects.get(uid=search_id)
+            have_car = search_log.have_car
+            #serializer = CarSearchLogSerializer(search_log)
+            #return Response(serializer.data, status=status.HTTP_200_OK)
+        
+        except ObjectDoesNotExist:
+            #return Response({"detail": "Search log not found."}, status=status.HTTP_404_NOT_FOUND)
+            have_car = False
+
+        """
+        except MultipleObjectsReturned:
+            return Response({"detail": "Multiple entries found."}, status=status.HTTP_400_BAD_REQUEST)"""        
+
+        response = 'ok'
+        if (have_car):
+            vehicle = Vehicles.objects.filter(
+                make_name=search_log.make, 
+                model=search_log.model, 
+                year=search_log.year, 
+                engine_type=search_log.engine_type).first()
+                
+        else:
+            if search_log.vehicle_id:
+                vehicle = Vehicles.objects.filter(vehicle_id=search_log.vehicle_id).first()
+
+            else:
+
+                # temporary car selection
+                # replace with actual car search based on car score
+                vehicle = Vehicles.objects.order_by('?').first()
+
+        if vehicle:
+            if not search_log.vehicle_id:
+                search_log.vehicle_id = vehicle.vehicle_id
+                search_log.save()
+
+            serializer = VehiclesSerializer(vehicle)
+            data = serializer.data
+            
+            image = VehicleImages.objects.filter(vehicle_id=vehicle.vehicle_id).first()
+
+            if (image and image.image_name and image.image_name.strip() != '-'):
+                data['image'] = image.image_name
+            else:
+                data['image'] = '/images/car-icon-1.png'
+
+            # temp, replace with actual value
+            data['coo'] = random.randint(10000, 999999)
+            data['co2'] = data['tailpipe_comb_value']
+            data['rating'] = random.randint(10000, 999999)
+            data['starRating']= random.randint(1, 5)
+            data['savings'] = random.randint(10, 9999)
+
+        else:
+            response = 'empty'
+            data = {
+                'make': 'no matching car'
+            }
+        
+        return Response({"status": response, 'data': data }, status=status.HTTP_200_OK)
