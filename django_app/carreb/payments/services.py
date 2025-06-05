@@ -16,83 +16,90 @@ class StripeService:
         self.stripe = stripe
         self.stripe.api_key = settings.STRIPE_SECRET_KEY
 
-    def create_checkout_session(self, **kwargs):
-        try:
-            product_id = kwargs.get('product_id')
-            amount = kwargs.get('amount')
-            product_name = kwargs.get('product_name')
-            customer_email = kwargs.get('customer_email')
-            metadata = kwargs.get('metadata', {})
-            success_url = kwargs.get('success_url', settings.PAYMENT_SUCCESS_URL)
-            cancel_url = kwargs.get('cancel_url', settings.PAYMENT_CANCEL_URL)
+def create_checkout_session(self, **kwargs):
+    try:
+        product_id = kwargs.get('product_id')
+        amount = kwargs.get('amount')
+        product_name = kwargs.get('product_name')
+        customer_email = kwargs.get('customer_email')
+        metadata = kwargs.get('metadata', {})
+        success_url = kwargs.get('success_url', settings.PAYMENT_SUCCESS_URL)
+        cancel_url = kwargs.get('cancel_url', settings.PAYMENT_CANCEL_URL)
+        
+        # Extract search_uid from metadata for tracking
+        search_uid = metadata.get('search_uid')
+        
+        if '{CHECKOUT_SESSION_ID}' not in success_url:
+            success_url = f"{success_url}?session_id={{CHECKOUT_SESSION_ID}}"
             
-            if '{CHECKOUT_SESSION_ID}' not in success_url:
-                success_url = f"{success_url}?session_id={{CHECKOUT_SESSION_ID}}"
+        # Add search_uid to success_url if present
+        if search_uid:
+            success_url = f"{success_url}&sid={search_uid}"
 
-            if product_id:
-                try:
-                    product = Product.objects.get(id=product_id, active=True)
-                    amount = product.price
-                    product_name = product.name
-                    currency = product.currency
-                except Product.DoesNotExist:
-                    raise ValueError(f"Product with ID {product_id} not found or inactive")
-            else:
-                if not amount or not product_name:
-                    raise ValueError("Both amount and product_name are required when product_id is not provided")
-                currency = getattr(settings, 'PAYMENT_CURRENCY', 'usd')
+        if product_id:
+            try:
+                product = Product.objects.get(id=product_id, active=True)
+                amount = product.price
+                product_name = product.name
+                currency = product.currency
+            except Product.DoesNotExist:
+                raise ValueError(f"Product with ID {product_id} not found or inactive")
+        else:
+            if not amount or not product_name:
+                raise ValueError("Both amount and product_name are required when product_id is not provided")
+            currency = getattr(settings, 'PAYMENT_CURRENCY', 'usd')
 
-            session_params = {
-                'payment_method_types': ['card'],
-                'line_items': [{
-                    'price_data': {
-                        'currency': currency,
-                        'product_data': {
-                            'name': product_name,
-                        },
-                        'unit_amount': int(float(amount) * 100),
+        session_params = {
+            'payment_method_types': ['card'],
+            'line_items': [{
+                'price_data': {
+                    'currency': currency,
+                    'product_data': {
+                        'name': product_name,
                     },
-                    'quantity': 1,
-                }],
-                'mode': 'payment',
-                'success_url': success_url,
-                'cancel_url': cancel_url,
-                'metadata': metadata,
-            }
+                    'unit_amount': int(float(amount) * 100),
+                },
+                'quantity': 1,
+            }],
+            'mode': 'payment',
+            'success_url': success_url,
+            'cancel_url': cancel_url,
+            'metadata': metadata,  # This will include search_uid and other data
+        }
 
-            if customer_email:
-                session_params['customer_email'] = customer_email
+        if customer_email:
+            session_params['customer_email'] = customer_email
 
-            checkout_session = self.stripe.checkout.Session.create(**session_params)
+        checkout_session = self.stripe.checkout.Session.create(**session_params)
 
-            customer = None
-            if customer_email:
-                customer, _ = Customer.objects.get_or_create(
-                    email=customer_email,
-                    defaults={'updated_at': timezone.now()}
-                )
+        customer = None
+        if customer_email:
+            customer, _ = Customer.objects.get_or_create(
+                email=customer_email,
+                defaults={'updated_at': timezone.now()}
+            )
 
-            with transaction.atomic():
-                payment = Payment.objects.create(
-                    customer=customer,
-                    product_id=product_id if product_id else None,
-                    amount=amount,
-                    currency=currency,
-                    stripe_session_id=checkout_session.id,
-                    metadata=metadata,
-                )
+        with transaction.atomic():
+            payment = Payment.objects.create(
+                customer=customer,
+                product_id=product_id if product_id else None,
+                amount=amount,
+                currency=currency,
+                stripe_session_id=checkout_session.id,
+                metadata=metadata,  # Store metadata including search_uid
+            )
 
-            logger.info(f"Checkout session created: {checkout_session.id}")
+        logger.info(f"Checkout session created: {checkout_session.id} with search_uid: {search_uid}")
 
-            return {
-                'id': checkout_session.id,
-                'url': checkout_session.url,
-                'payment_id': str(payment.uuid),
-            }
+        return {
+            'id': checkout_session.id,
+            'url': checkout_session.url,
+            'payment_id': str(payment.uuid),
+        }
 
-        except Exception as e:
-            logger.error(f"Error creating checkout session: {str(e)}", exc_info=True)
-            raise
+    except Exception as e:
+        logger.error(f"Error creating checkout session: {str(e)}", exc_info=True)
+        raise
 
     def handle_webhook_event(self, payload, signature):
         try:
