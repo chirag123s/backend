@@ -31,8 +31,8 @@ class PaymentLogSerializer(serializers.ModelSerializer):
         read_only_fields = ('created_at',)
 
 class CheckoutSessionCreateSerializer(serializers.Serializer):
-    # Product selection
-    product_id = serializers.IntegerField(required=False)
+    # Product selection - CHANGED: Now accepts string to handle Stripe product IDs
+    product_id = serializers.CharField(max_length=255, required=False)  # Changed from IntegerField
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     product_name = serializers.CharField(max_length=255, required=False)
     
@@ -79,7 +79,7 @@ class CheckoutSessionCreateSerializer(serializers.Serializer):
                 )
         
         return data
-
+    
 class SubscriptionManagementSerializer(serializers.Serializer):
     """Serializer for subscription management operations"""
     subscription_id = serializers.CharField(max_length=255)

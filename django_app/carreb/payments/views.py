@@ -240,6 +240,187 @@ class SubscriptionDetailView(APIView):
             return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class UserSubscriptionStatusView(APIView):
+    """Get current user's subscription status"""
+
+    def get(self, request):
+        try:
+            user_id = request.query_params.get('user_id')
+            user_email = request.query_params.get('user_email')
+            
+            if not user_id and not user_email:
+                return Response({
+                    'error': 'Either user_id or user_email is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Find customer record
+            customer = None
+            if user_id:
+                customer = Customer.objects.filter(user_id=user_id).first()
+            elif user_email:
+                customer = Customer.objects.filter(email=user_email).first()
+            
+            if not customer:
+                return Response({
+                    'has_subscription': False,
+                    'subscription': None,
+                    'customer': None
+                })
+            
+            # Get active subscriptions
+            active_subscriptions = Subscription.objects.filter(
+                customer=customer,
+                status__in=['active', 'trialing', 'past_due']
+            ).order_by('-created_at')
+            
+            subscription_data = []
+            for subscription in active_subscriptions:
+                # Sync with Stripe to get latest status
+                try:
+                    stripe.api_key = settings.STRIPE_SECRET_KEY
+                    stripe_subscription = stripe.Subscription.retrieve(
+                        subscription.stripe_subscription_id
+                    )
+                    
+                    # Update local record
+                    stripe_service._update_local_subscription(stripe_subscription)
+                    subscription.refresh_from_db()
+                    
+                    # Include product details
+                    subscription_info = {
+                        'id': subscription.id,
+                        'stripe_subscription_id': subscription.stripe_subscription_id,
+                        'status': subscription.status,
+                        'current_period_start': subscription.current_period_start,
+                        'current_period_end': subscription.current_period_end,
+                        'cancel_at_period_end': subscription.cancel_at_period_end,
+                        'canceled_at': subscription.canceled_at,
+                        'trial_start': subscription.trial_start,
+                        'trial_end': subscription.trial_end,
+                        'product': ProductSerializer(subscription.product).data if subscription.product else None,
+                        'stripe_data': {
+                            'current_period_start': stripe_subscription.current_period_start,
+                            'current_period_end': stripe_subscription.current_period_end,
+                            'items': [
+                                {
+                                    'price_id': item.price.id,
+                                    'product_id': item.price.product,
+                                    'quantity': item.quantity,
+                                    'amount': item.price.unit_amount,
+                                    'currency': item.price.currency,
+                                    'interval': item.price.recurring.interval if item.price.recurring else None,
+                                } for item in stripe_subscription.items.data
+                            ]
+                        }
+                    }
+                    subscription_data.append(subscription_info)
+                    
+                except stripe.error.InvalidRequestError:
+                    # Subscription not found in Stripe, mark as canceled
+                    subscription.status = 'canceled'
+                    subscription.save()
+                except Exception as e:
+                    logger.warning(f"Error syncing subscription {subscription.stripe_subscription_id}: {str(e)}")
+                    # Still include local data even if Stripe sync fails
+                    subscription_info = {
+                        'id': subscription.id,
+                        'stripe_subscription_id': subscription.stripe_subscription_id,
+                        'status': subscription.status,
+                        'current_period_start': subscription.current_period_start,
+                        'current_period_end': subscription.current_period_end,
+                        'cancel_at_period_end': subscription.cancel_at_period_end,
+                        'product': ProductSerializer(subscription.product).data if subscription.product else None,
+                        'sync_error': True
+                    }
+                    subscription_data.append(subscription_info)
+            
+            # Filter only truly active subscriptions
+            active_subscriptions_data = [
+                sub for sub in subscription_data 
+                if sub['status'] in ['active', 'trialing', 'past_due']
+            ]
+            
+            return Response({
+                'has_subscription': len(active_subscriptions_data) > 0,
+                'subscriptions': active_subscriptions_data,
+                'customer': {
+                    'id': customer.id,
+                    'user_id': customer.user_id,
+                    'email': customer.email,
+                    'stripe_customer_id': customer.stripe_customer_id
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error checking user subscription status: {str(e)}", exc_info=True)
+            return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserSubscriptionPlansView(APIView):
+    """Get subscription plans available for upgrade/downgrade"""
+    
+    def get(self, request):
+        try:
+            user_id = request.query_params.get('user_id')
+            user_email = request.query_params.get('user_email')
+            
+            # Get current subscription status
+            current_subscription = None
+            if user_id or user_email:
+                customer = None
+                if user_id:
+                    customer = Customer.objects.filter(user_id=user_id).first()
+                elif user_email:
+                    customer = Customer.objects.filter(email=user_email).first()
+                
+                if customer:
+                    current_subscription = Subscription.objects.filter(
+                        customer=customer,
+                        status__in=['active', 'trialing', 'past_due']
+                    ).first()
+            
+            # Get all available subscription products
+            subscription_products = Product.objects.filter(
+                product_type='subscription',
+                active=True
+            ).order_by('price')
+            
+            plans = []
+            for product in subscription_products:
+                plan_info = ProductSerializer(product).data
+                
+                # Add recommendation status
+                if current_subscription and current_subscription.product:
+                    current_price = float(current_subscription.product.price)
+                    product_price = float(product.price)
+                    
+                    if product.id == current_subscription.product.id:
+                        plan_info['is_current'] = True
+                        plan_info['recommendation'] = 'current'
+                    elif product_price > current_price:
+                        plan_info['is_current'] = False
+                        plan_info['recommendation'] = 'upgrade'
+                    elif product_price < current_price:
+                        plan_info['is_current'] = False
+                        plan_info['recommendation'] = 'downgrade'
+                    else:
+                        plan_info['is_current'] = False
+                        plan_info['recommendation'] = 'alternative'
+                else:
+                    plan_info['is_current'] = False
+                    plan_info['recommendation'] = 'available'
+                
+                plans.append(plan_info)
+            
+            return Response({
+                'plans': plans,
+                'current_subscription': SubscriptionSerializer(current_subscription).data if current_subscription else None
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting subscription plans: {str(e)}", exc_info=True)
+            return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 @csrf_exempt
 @require_POST
 def stripe_webhook(request):
