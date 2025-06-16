@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Product, Payment, Subscription
+from .models import Product, Payment, Subscription, Customer  # Added missing Customer import
 from .serializers import (
     ProductSerializer, PaymentSerializer, SubscriptionSerializer,
     CheckoutSessionCreateSerializer, SubscriptionManagementSerializer
@@ -149,7 +149,6 @@ class SubscriptionListView(APIView):
             logger.error(f"Error listing subscriptions: {str(e)}", exc_info=True)
             return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 class SubscriptionManagementView(APIView):
     """Manage subscription operations (cancel, pause, resume, update)"""
 
@@ -238,8 +237,7 @@ class SubscriptionDetailView(APIView):
         except Exception as e:
             logger.error(f"Error retrieving subscription details: {str(e)}", exc_info=True)
             return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
+        
 class UserSubscriptionStatusView(APIView):
     """Get current user's subscription status"""
 
@@ -264,7 +262,9 @@ class UserSubscriptionStatusView(APIView):
                 return Response({
                     'has_subscription': False,
                     'subscription': None,
-                    'customer': None
+                    'customer': None,
+                    'plan_type': 'free',
+                    'plan_name': 'Free Plan'
                 })
             
             # Get active subscriptions
@@ -340,9 +340,37 @@ class UserSubscriptionStatusView(APIView):
                 if sub['status'] in ['active', 'trialing', 'past_due']
             ]
             
+            # Determine plan type and name
+            plan_type = 'free'
+            plan_name = 'Free Plan'
+            
+            if active_subscriptions_data:
+                # Get the highest tier subscription
+                highest_subscription = max(active_subscriptions_data, 
+                    key=lambda x: float(x['product']['price']) if x['product'] else 0
+                )
+                
+                if highest_subscription['product']:
+                    plan_name = highest_subscription['product']['name']
+                    # Determine plan type based on product metadata or name
+                    product_metadata = highest_subscription['product'].get('metadata', {})
+                    if 'tier' in product_metadata:
+                        plan_type = product_metadata['tier']
+                    else:
+                        # Fallback to determine by price or name
+                        price = float(highest_subscription['product']['price'])
+                        if price >= 25:
+                            plan_type = 'pro'
+                        elif price >= 10:
+                            plan_type = 'core'
+                        else:
+                            plan_type = 'smart'
+            
             return Response({
                 'has_subscription': len(active_subscriptions_data) > 0,
                 'subscriptions': active_subscriptions_data,
+                'plan_type': plan_type,
+                'plan_name': plan_name,
                 'customer': {
                     'id': customer.id,
                     'user_id': customer.user_id,
@@ -421,6 +449,296 @@ class UserSubscriptionPlansView(APIView):
             logger.error(f"Error getting subscription plans: {str(e)}", exc_info=True)
             return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class PaymentSuccessCallbackView(APIView):
+    """Handle post-payment success callback and sync subscription status"""
+    
+    def post(self, request):
+        try:
+            session_id = request.data.get('session_id')
+            user_id = request.data.get('user_id')
+            user_email = request.data.get('user_email')
+            search_uid = request.data.get('search_uid')
+            
+            if not session_id:
+                return Response({
+                    'error': 'session_id is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get payment from database
+            payment = Payment.objects.filter(session_id=session_id).first()
+            if not payment:
+                return Response({
+                    'error': 'Payment not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Get latest session status from Stripe
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            stripe_session = stripe.checkout.Session.retrieve(session_id)
+            
+            # Update customer info if provided
+            if payment.customer and (user_id or user_email):
+                if user_id and not payment.customer.user_id:
+                    payment.customer.user_id = user_id
+                if user_email and payment.customer.email != user_email:
+                    payment.customer.email = user_email
+                payment.customer.save()
+            
+            # Handle search integration if search_uid provided
+            search_result = None
+            if search_uid:
+                search_result = self._handle_search_to_garage_migration(
+                    search_uid, payment.customer, payment
+                )
+            
+            # Get updated subscription status
+            subscription_status = self._get_user_subscription_status(
+                payment.customer.user_id if payment.customer else user_id,
+                payment.customer.email if payment.customer else user_email
+            )
+            
+            response_data = {
+                'status': 'success',
+                'payment': {
+                    'uuid': str(payment.uuid),
+                    'session_id': session_id,
+                    'payment_status': stripe_session.payment_status,
+                    'mode': stripe_session.mode,
+                    'amount_total': stripe_session.amount_total,
+                    'currency': stripe_session.currency,
+                },
+                'subscription_status': subscription_status,
+            }
+            
+            if search_result:
+                response_data['search_migration'] = search_result
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error in payment success callback: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'An unexpected error occurred'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _handle_search_to_garage_migration(self, search_uid, customer, payment):
+        """Migrate search result to user's garage"""
+        try:
+            # Import here to avoid circular imports
+            from api.models import CarSearchLog
+            
+            # Find the search log
+            search_log = CarSearchLog.objects.filter(uid=search_uid).first()
+            if not search_log:
+                return {'status': 'search_not_found'}
+            
+            # Update search log with customer info
+            if customer:
+                search_log.customer_id = customer.id
+                search_log.payment_id = str(payment.uuid)
+                search_log.save()
+            
+            return {
+                'status': 'migrated',
+                'search_id': search_uid,
+                'vehicle_id': search_log.vehicle_id,
+                'customer_id': customer.id if customer else None
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error migrating search to garage: {str(e)}")
+            return {'status': 'migration_failed', 'error': str(e)}
+    
+    def _get_user_subscription_status(self, user_id, user_email):
+        """Get current subscription status for user"""
+        try:
+            # Find customer
+            customer = None
+            if user_id:
+                customer = Customer.objects.filter(user_id=user_id).first()
+            elif user_email:
+                customer = Customer.objects.filter(email=user_email).first()
+            
+            if not customer:
+                return {
+                    'has_subscription': False,
+                    'plan_type': 'free',
+                    'plan_name': 'Free Plan'
+                }
+            
+            # Get active subscriptions
+            active_subscriptions = Subscription.objects.filter(
+                customer=customer,
+                status__in=['active', 'trialing', 'past_due']
+            ).order_by('-created_at')
+            
+            if not active_subscriptions.exists():
+                return {
+                    'has_subscription': False,
+                    'plan_type': 'free',
+                    'plan_name': 'Free Plan'
+                }
+            
+            # Get the highest tier subscription
+            highest_subscription = max(active_subscriptions, 
+                key=lambda x: float(x.product.price) if x.product else 0
+            )
+            
+            plan_type = 'free'
+            plan_name = 'Free Plan'
+            
+            if highest_subscription.product:
+                plan_name = highest_subscription.product.name
+                # Determine plan type based on price or metadata
+                price = float(highest_subscription.product.price)
+                if price >= 25:
+                    plan_type = 'pro'
+                elif price >= 10:
+                    plan_type = 'core'
+                else:
+                    plan_type = 'smart'
+            
+            return {
+                'has_subscription': True,
+                'plan_type': plan_type,
+                'plan_name': plan_name,
+                'subscription_id': highest_subscription.stripe_subscription_id,
+                'current_period_end': highest_subscription.current_period_end.isoformat() if highest_subscription.current_period_end else None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting subscription status: {str(e)}")
+            return {
+                'has_subscription': False,
+                'plan_type': 'free',
+                'plan_name': 'Free Plan'
+            }
+
+
+class RefreshSubscriptionStatusView(APIView):
+    """Force refresh subscription status from Stripe"""
+    
+    def post(self, request):
+        try:
+            user_id = request.data.get('user_id')
+            user_email = request.data.get('user_email')
+            
+            if not user_id and not user_email:
+                return Response({
+                    'error': 'Either user_id or user_email is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Find customer
+            customer = None
+            if user_id:
+                customer = Customer.objects.filter(user_id=user_id).first()
+            elif user_email:
+                customer = Customer.objects.filter(email=user_email).first()
+            
+            if not customer:
+                return Response({
+                    'has_subscription': False,
+                    'plan_type': 'free',
+                    'plan_name': 'Free Plan',
+                    'message': 'Customer not found'
+                })
+            
+            # Get all subscriptions for this customer
+            subscriptions = Subscription.objects.filter(customer=customer)
+            
+            updated_count = 0
+            for subscription in subscriptions:
+                try:
+                    # Get latest data from Stripe
+                    stripe.api_key = settings.STRIPE_SECRET_KEY
+                    stripe_subscription = stripe.Subscription.retrieve(
+                        subscription.stripe_subscription_id
+                    )
+                    
+                    # Update local record
+                    stripe_service._update_local_subscription(stripe_subscription)
+                    updated_count += 1
+                    
+                except stripe.error.InvalidRequestError:
+                    # Subscription not found in Stripe, mark as canceled
+                    subscription.status = 'canceled'
+                    subscription.save()
+                except Exception as e:
+                    logger.warning(f"Error syncing subscription {subscription.stripe_subscription_id}: {str(e)}")
+            
+            # Get updated status
+            subscription_status = self._get_updated_subscription_status(customer)
+            
+            return Response({
+                **subscription_status,
+                'sync_info': {
+                    'subscriptions_updated': updated_count,
+                    'total_subscriptions': subscriptions.count()
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error refreshing subscription status: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'An unexpected error occurred'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _get_updated_subscription_status(self, customer):
+        """Get updated subscription status after sync"""
+        active_subscriptions = Subscription.objects.filter(
+            customer=customer,
+            status__in=['active', 'trialing', 'past_due']
+        ).order_by('-created_at')
+        
+        if not active_subscriptions.exists():
+            return {
+                'has_subscription': False,
+                'plan_type': 'free',
+                'plan_name': 'Free Plan'
+            }
+        
+        # Get the highest tier subscription
+        highest_subscription = max(active_subscriptions, 
+            key=lambda x: float(x.product.price) if x.product else 0
+        )
+        
+        plan_type = 'free'
+        plan_name = 'Free Plan'
+        
+        if highest_subscription.product:
+            plan_name = highest_subscription.product.name
+            price = float(highest_subscription.product.price)
+            if price >= 25:
+                plan_type = 'pro'
+            elif price >= 10:
+                plan_type = 'core'
+            else:
+                plan_type = 'smart'
+        
+        return {
+            'has_subscription': True,
+            'plan_type': plan_type,
+            'plan_name': plan_name,
+            'subscription_id': highest_subscription.stripe_subscription_id,
+            'current_period_end': highest_subscription.current_period_end.isoformat() if highest_subscription.current_period_end else None,
+            'subscriptions': [
+                {
+                    'id': sub.id,
+                    'stripe_subscription_id': sub.stripe_subscription_id,
+                    'status': sub.status,
+                    'product_name': sub.product.name if sub.product else None,
+                    'current_period_end': sub.current_period_end.isoformat() if sub.current_period_end else None
+                } for sub in active_subscriptions
+            ]
+        }
+
+class StripeConfigView(APIView):
+    """Expose Stripe publishable key to the frontend"""
+
+    def get(self, request):
+        return Response({
+            'publishableKey': settings.STRIPE_PUBLISHABLE_KEY
+        })
+
 @csrf_exempt
 @require_POST
 def stripe_webhook(request):
@@ -442,12 +760,3 @@ def stripe_webhook(request):
     except Exception as e:
         logger.error(f"Stripe webhook processing error: {str(e)}", exc_info=True)
         return HttpResponse(status=500)
-
-
-class StripeConfigView(APIView):
-    """Expose Stripe publishable key to the frontend"""
-
-    def get(self, request):
-        return Response({
-            'publishableKey': settings.STRIPE_PUBLISHABLE_KEY
-        })

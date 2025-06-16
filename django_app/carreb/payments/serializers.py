@@ -19,6 +19,9 @@ class PaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ('session_id', 'stripe_payment_intent_id', 'payment_status', 'stripe_subscription_id')
 
 class SubscriptionSerializer(serializers.ModelSerializer):
+    product = ProductSerializer(read_only=True)
+    customer = CustomerSerializer(read_only=True)
+    
     class Meta:
         model = Subscription
         fields = '__all__'
@@ -51,8 +54,9 @@ class CheckoutSessionCreateSerializer(serializers.Serializer):
     billing_interval_count = serializers.IntegerField(default=1, required=False)
     trial_period_days = serializers.IntegerField(required=False, allow_null=True)
     
-    # Customer and metadata
+    # Customer and metadata - ADDED user_id support
     customer_email = serializers.EmailField(required=False)
+    user_id = serializers.CharField(max_length=255, required=False)  # Added this field
     metadata = serializers.JSONField(required=False)
     
     # URLs
@@ -78,6 +82,12 @@ class CheckoutSessionCreateSerializer(serializers.Serializer):
                     "Either product_id or both amount and product_name must be provided for one-time payments."
                 )
         
+        # Validate customer identification - require either email or user_id
+        if not data.get('customer_email') and not data.get('user_id'):
+            raise serializers.ValidationError(
+                "Either customer_email or user_id must be provided."
+            )
+        
         return data
     
 class SubscriptionManagementSerializer(serializers.Serializer):
@@ -96,3 +106,11 @@ class SubscriptionManagementSerializer(serializers.Serializer):
         default='create_prorations',
         required=False
     )
+
+class UserSubscriptionStatusSerializer(serializers.Serializer):
+    """Serializer for user subscription status response"""
+    has_subscription = serializers.BooleanField()
+    plan_type = serializers.CharField(max_length=50)
+    plan_name = serializers.CharField(max_length=255)
+    subscriptions = SubscriptionSerializer(many=True)
+    customer = CustomerSerializer(allow_null=True)

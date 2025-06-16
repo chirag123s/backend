@@ -19,8 +19,7 @@ class StripeService:
         self.stripe = stripe
         self.stripe.api_key = settings.STRIPE_SECRET_KEY
 
-    # In django_app/carreb/payments/services.py
-    # Update the create_checkout_session method around line 25-65
+    # Fix for payments/services.py - Updated create_checkout_session method
 
     def create_checkout_session(self, **kwargs):
         """Create checkout session for both one-time payments and subscriptions"""
@@ -29,6 +28,7 @@ class StripeService:
             amount = kwargs.get("amount")
             product_name = kwargs.get("product_name")
             customer_email = kwargs.get("customer_email")
+            user_id = kwargs.get("user_id")
             metadata = kwargs.get("metadata", {})
             success_url = kwargs.get("success_url", settings.PAYMENT_SUCCESS_URL)
             cancel_url = kwargs.get("cancel_url", settings.PAYMENT_CANCEL_URL)
@@ -46,18 +46,31 @@ class StripeService:
             if search_uid:
                 success_url = f"{success_url}&sid={search_uid}"
 
-            # Handle product and pricing - UPDATED to handle both local IDs and Stripe IDs
+            # Handle product and pricing - FIXED LOGIC
             product = None
             if product_id:
                 try:
-                    # First try to find by local integer ID
-                    if product_id.isdigit():
-                        product = Product.objects.get(id=int(product_id), active=True)
-                    else:
-                        # Try to find by Stripe product ID
+                    # CHANGED: Try Stripe product ID first (since most frontend calls use Stripe IDs)
+                    if product_id.startswith('prod_'):
+                        # This is a Stripe product ID
                         product = Product.objects.get(
                             stripe_product_id=product_id, active=True
                         )
+                    elif product_id.isdigit():
+                        # This is a local database ID
+                        product = Product.objects.get(id=int(product_id), active=True)
+                    else:
+                        # Try both - first as Stripe ID, then as local ID
+                        try:
+                            product = Product.objects.get(
+                                stripe_product_id=product_id, active=True
+                            )
+                        except Product.DoesNotExist:
+                            # Try as local ID (might be a string representation of int)
+                            try:
+                                product = Product.objects.get(id=int(product_id), active=True)
+                            except (ValueError, Product.DoesNotExist):
+                                raise Product.DoesNotExist
 
                     if (
                         payment_type == "subscription"
@@ -83,8 +96,17 @@ class StripeService:
                             product.save()
 
                 except Product.DoesNotExist:
+                    # IMPROVED ERROR MESSAGE with debugging info
+                    logger.error(f"Product lookup failed for ID: {product_id}")
+                    logger.error(f"Tried: stripe_product_id='{product_id}' and local id='{product_id}'")
+                    
+                    # List available products for debugging
+                    available_products = Product.objects.filter(active=True).values('id', 'stripe_product_id', 'name')
+                    logger.error(f"Available products: {list(available_products)}")
+                    
                     raise ValueError(
-                        f"Product with ID {product_id} not found or inactive"
+                        f"Product with ID {product_id} not found or inactive. "
+                        f"Available products: {[p['stripe_product_id'] or p['id'] for p in available_products]}"
                     )
             else:
                 if not amount or not product_name:
@@ -93,18 +115,41 @@ class StripeService:
                     )
                 currency = getattr(settings, "PAYMENT_CURRENCY", "aud")
 
-            # Create or get customer
+            # Create or get customer - Updated to handle user_id
             customer = None
-            if customer_email:
-                customer, created = Customer.objects.get_or_create(
-                    email=customer_email, defaults={"updated_at": timezone.now()}
-                )
+            if customer_email or user_id:
+                customer_defaults = {"updated_at": timezone.now()}
+                if user_id:
+                    customer_defaults["user_id"] = user_id
+                
+                if customer_email:
+                    customer, created = Customer.objects.get_or_create(
+                        email=customer_email, 
+                        defaults=customer_defaults
+                    )
+                    # Update user_id if it wasn't set before
+                    if user_id and not customer.user_id:
+                        customer.user_id = user_id
+                        customer.save()
+                elif user_id:
+                    # Try to find by user_id first, then create if not found
+                    customer = Customer.objects.filter(user_id=user_id).first()
+                    if not customer and customer_email:
+                        customer = Customer.objects.create(
+                            user_id=user_id,
+                            email=customer_email,
+                            **customer_defaults
+                        )
 
                 # Create or get Stripe customer
-                if not customer.stripe_customer_id:
+                if customer and not customer.stripe_customer_id:
+                    stripe_customer_metadata = {"internal_customer_id": customer.id}
+                    if user_id:
+                        stripe_customer_metadata["user_id"] = user_id
+
                     stripe_customer = self.stripe.Customer.create(
-                        email=customer_email,
-                        metadata={"internal_customer_id": customer.id},
+                        email=customer.email,
+                        metadata=stripe_customer_metadata,
                     )
                     customer.stripe_customer_id = stripe_customer.id
                     customer.save()
@@ -155,6 +200,7 @@ class StripeService:
         except Exception as e:
             logger.error(f"Error creating checkout session: {str(e)}", exc_info=True)
             raise
+
 
     def _create_subscription_checkout_session(
         self,
@@ -406,6 +452,8 @@ class StripeService:
             mode = session.get("mode")
             payment_intent_id = session.get("payment_intent")
             subscription_id = session.get("subscription")
+            customer_email = session.get("customer_email")
+            customer_id = session.get("customer")
 
             with transaction.atomic():
                 payment = Payment.objects.filter(session_id=session_id).first()
@@ -419,6 +467,11 @@ class StripeService:
 
                     payment.updated_at = timezone.now()
                     payment.save()
+
+                    # Update customer with Stripe customer ID if needed
+                    if payment.customer and customer_id and not payment.customer.stripe_customer_id:
+                        payment.customer.stripe_customer_id = customer_id
+                        payment.customer.save()
 
                     PaymentLog.objects.create(
                         payment=payment,
@@ -461,10 +514,17 @@ class StripeService:
                     stripe_subscription_id=subscription_id
                 ).first()
 
+                # Try to find the product based on subscription items
+                product = None
+                if subscription_data.get("items") and subscription_data["items"]["data"]:
+                    price_id = subscription_data["items"]["data"][0]["price"]["id"]
+                    product = Product.objects.filter(stripe_price_id=price_id).first()
+
                 # Create subscription record
                 subscription = Subscription.objects.create(
                     customer=customer,
                     payment=payment,
+                    product=product,
                     stripe_subscription_id=subscription_id,
                     status=subscription_data.get("status"),
                     current_period_start=datetime.fromtimestamp(
@@ -575,8 +635,12 @@ class StripeService:
             subscription_id = invoice_data.get("subscription")
 
             if subscription_id:
+                subscription = Subscription.objects.filter(
+                    stripe_subscription_id=subscription_id
+                ).first()
+
                 PaymentLog.objects.create(
-                    subscription_id=subscription_id,
+                    subscription=subscription,
                     event_type="invoice.payment_succeeded",
                     data=invoice_data,
                 )
@@ -593,8 +657,12 @@ class StripeService:
             subscription_id = invoice_data.get("subscription")
 
             if subscription_id:
+                subscription = Subscription.objects.filter(
+                    stripe_subscription_id=subscription_id
+                ).first()
+
                 PaymentLog.objects.create(
-                    subscription_id=subscription_id,
+                    subscription=subscription,
                     event_type="invoice.payment_failed",
                     data=invoice_data,
                 )
@@ -605,7 +673,6 @@ class StripeService:
             )
             raise
 
-    # Keep existing one-time payment handlers
     def _handle_payment_intent_succeeded(self, payment_intent):
         """Handle successful payment intent"""
         try:

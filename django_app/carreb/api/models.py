@@ -36,7 +36,7 @@ class CarDetails(models.Model):
         db_table = 'car_details'
 
     def __str__(self):
-        return self.name
+        return f"{self.make} {self.family}"
 
 # States
 class States(models.Model):
@@ -99,7 +99,7 @@ class Vehicles(models.Model):
         return f"{self.id} {self.year} {self.make} {self.model}"
 
 
-# Car search log
+# Car search log - UPDATED to support customer and payment relationships
 class CarSearchLog(models.Model):
     id = models.AutoField(primary_key=True)
     uid = models.CharField(max_length=50, null=True, blank=True)
@@ -117,6 +117,13 @@ class CarSearchLog(models.Model):
     ip_address = models.GenericIPAddressField()
     referral_code = models.CharField(max_length=255, blank=True, null=True)
     user_agent = models.TextField(blank=True, null=True)
+    
+    # NEW FIELDS for payment integration
+    customer_id = models.IntegerField(null=True, blank=True)  # Reference to payments.Customer
+    payment_id = models.CharField(max_length=255, null=True, blank=True)  # UUID string reference
+    is_migrated_to_garage = models.BooleanField(default=False)
+    migrated_at = models.DateTimeField(null=True, blank=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -138,4 +145,4 @@ class VehicleImages(models.Model):
         db_table = "vehicle_images"
 
     def __str__(self):
-        return f"{self.id} {self.year} {self.make} {self.model}"
+        return f"{self.vehicle_id} - {self.image_name}"
