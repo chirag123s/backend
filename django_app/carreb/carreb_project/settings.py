@@ -53,7 +53,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     'corsheaders',
     'api',
-    'scraper_app',
+    #'scraper_app',
     'payments',
 ]
 
@@ -117,8 +117,8 @@ DATABASES = {
         'PORT': os.environ.get("SCPR_DB_PORT"),
     }
 }
-DATABASE_ROUTERS = ['scraper_app.routers.ExternalDBRouter']
-#DATABASE_ROUTERS = []
+#DATABASE_ROUTERS = ['scraper_app.routers.ExternalDBRouter']
+DATABASE_ROUTERS = []
 
 
 MIGRATION_MODULES = {

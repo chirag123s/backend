@@ -4,7 +4,7 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 
-from .views import CreateShareableLinkView, ParseCDGG, PaymentSuccessIntegrationView, StateListView, GetCarMakesListView, GetCarModelListView, GetCarYearListView, GetCarEngineTypeListView, CarVariantListView, CarSeriesListView, CarMatchesListView, CarSuggestionListView, GetCarMatchView, GetCarMatchBySIDView,MoveSearchToGarageView, UserDashboardView, UserGarageView,UserSubscriptionView, SearchShareableView
+from .views import ParseCDGG, StateListView, GetCarMakesListView, GetCarModelListView, GetCarYearListView, GetCarEngineTypeListView, CarVariantListView, CarSeriesListView, CarMatchesListView, CarSuggestionListView, GetCarMatchView, GetCarMatchBySIDView
 from . import views
 
 schema_view = get_schema_view(
@@ -46,20 +46,4 @@ urlpatterns = [
 
     # Redoc (optional):
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
-
-    path('garage/move-search/', MoveSearchToGarageView.as_view(), name='move-search-to-garage'),
-    path('garage/list/', UserGarageView.as_view(), name='user-garage-list'),
-    
-    # Subscription management
-    path('subscription/create/', UserSubscriptionView.as_view(), name='create-subscription'),
-    
-    # Integration endpoints
-    path('integration/payment-success/', PaymentSuccessIntegrationView.as_view(), name='payment-success-integration'),
-    path('integration/dashboard/', UserDashboardView.as_view(), name='user-dashboard'),
-    path('integration/create-shareable/', CreateShareableLinkView.as_view(), name='create-shareable-link'),
-    
-    # Shareable search
-    path('search/share/<str:search_uid>/', SearchShareableView.as_view(), name='search-shareable'),
-    
-    
 ]

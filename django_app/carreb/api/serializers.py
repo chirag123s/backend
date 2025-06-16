@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CarMakes, CarDetails, States, Vehicles, CarSearchLog, VehicleImages, MyGarage, UserSubscription
+from .models import CarMakes, CarDetails, States, Vehicles, CarSearchLog, VehicleImages
 
 class CampaignsSerializer(serializers.ModelSerializer):
     class Meta:
@@ -50,25 +50,3 @@ class VehicleImagesSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleImages
         fields = '__all__'
-
-class MyGarageSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = MyGarage
-        fields = '__all__'
-        read_only_fields = ('id', 'created_at', 'updated_at')
-
-
-class UserSubscriptionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = UserSubscription
-        fields = '__all__'
-        read_only_fields = ('id', 'created_at', 'updated_at')
-
-
-class SearchToGarageSerializer(serializers.Serializer):
-    """Serializer for moving search log to user's garage"""
-    search_uid = serializers.CharField(max_length=50)
-    user_id = serializers.CharField(max_length=255)
-    user_email = serializers.EmailField()
-    nickname = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    is_current_car = serializers.BooleanField(default=False)

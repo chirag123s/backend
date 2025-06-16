@@ -1,6 +1,6 @@
 # payments/serializers.py
 from rest_framework import serializers
-from .models import Product, Customer, Payment, PaymentLog
+from .models import Product, Customer, Payment, PaymentLog, Subscription
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -16,7 +16,13 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = '__all__'
-        read_only_fields = ('stripe_session_id', 'stripe_payment_intent_id', 'status')
+        read_only_fields = ('session_id', 'stripe_payment_intent_id', 'payment_status', 'stripe_subscription_id')
+
+class SubscriptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subscription
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
 
 class PaymentLogSerializer(serializers.ModelSerializer):
     class Meta:
@@ -25,20 +31,68 @@ class PaymentLogSerializer(serializers.ModelSerializer):
         read_only_fields = ('created_at',)
 
 class CheckoutSessionCreateSerializer(serializers.Serializer):
+    # Product selection
     product_id = serializers.IntegerField(required=False)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     product_name = serializers.CharField(max_length=255, required=False)
+    
+    # Payment type
+    payment_type = serializers.ChoiceField(
+        choices=[('one_time', 'One-time Payment'), ('subscription', 'Subscription')],
+        default='one_time'
+    )
+    
+    # Subscription-specific fields
+    billing_interval = serializers.ChoiceField(
+        choices=[('month', 'Monthly'), ('year', 'Yearly')],
+        required=False,
+        allow_null=True
+    )
+    billing_interval_count = serializers.IntegerField(default=1, required=False)
+    trial_period_days = serializers.IntegerField(required=False, allow_null=True)
+    
+    # Customer and metadata
     customer_email = serializers.EmailField(required=False)
     metadata = serializers.JSONField(required=False)
+    
+    # URLs
     success_url = serializers.CharField(max_length=2000, required=False)
     cancel_url = serializers.CharField(max_length=2000, required=False)
     
     def validate(self, data):
         """
-        Validate that either product_id or (amount and product_name) are provided
+        Validate based on payment type
         """
-        if not data.get('product_id') and not (data.get('amount') and data.get('product_name')):
-            raise serializers.ValidationError(
-                "Either product_id or both amount and product_name must be provided."
-            )
+        payment_type = data.get('payment_type', 'one_time')
+        
+        if payment_type == 'subscription':
+            # For subscriptions, product_id is required (we need Stripe product/price setup)
+            if not data.get('product_id'):
+                raise serializers.ValidationError(
+                    "product_id is required for subscription payments."
+                )
+        else:
+            # For one-time payments, either product_id or (amount and product_name) are required
+            if not data.get('product_id') and not (data.get('amount') and data.get('product_name')):
+                raise serializers.ValidationError(
+                    "Either product_id or both amount and product_name must be provided for one-time payments."
+                )
+        
         return data
+
+class SubscriptionManagementSerializer(serializers.Serializer):
+    """Serializer for subscription management operations"""
+    subscription_id = serializers.CharField(max_length=255)
+    action = serializers.ChoiceField(choices=[
+        ('cancel', 'Cancel'),
+        ('pause', 'Pause'),
+        ('resume', 'Resume'),
+        ('update', 'Update')
+    ])
+    cancel_at_period_end = serializers.BooleanField(required=False, default=True)
+    new_price_id = serializers.CharField(max_length=255, required=False)
+    proration_behavior = serializers.ChoiceField(
+        choices=[('create_prorations', 'Create Prorations'), ('none', 'None')],
+        default='create_prorations',
+        required=False
+    )
