@@ -24,6 +24,10 @@ class Product(models.Model):
     billing_interval = models.CharField(max_length=20, null=True, blank=True)  # 'month', 'year', etc.
     billing_interval_count = models.IntegerField(default=1)  # e.g., 1 for monthly, 12 for yearly
     
+    # NEW: Plan hierarchy and metadata
+    plan_tier = models.CharField(max_length=20, null=True, blank=True)  # 'free', 'smart', 'core', 'pro'
+    plan_metadata = models.JSONField(null=True, blank=True)  # Store plan features, limits, etc.
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -133,11 +137,84 @@ class Subscription(models.Model):
     def __str__(self):
         return f"Subscription {self.stripe_subscription_id} - {self.status}"
 
+# NEW MODELS FOR SUBSCRIPTION CHANGES
+
+class SubscriptionChange(models.Model):
+    """Track subscription plan changes and their status"""
+    CHANGE_TYPES = [
+        ('upgrade', 'Upgrade'),
+        ('downgrade', 'Downgrade'),
+        ('retention', 'Retention'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+        ('failed', 'Failed'),
+    ]
+    
+    id = models.AutoField(primary_key=True)
+    user_email = models.EmailField()
+    stripe_subscription_id = models.CharField(max_length=255)
+    old_price_id = models.CharField(max_length=255)
+    new_price_id = models.CharField(max_length=255)
+    old_product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True, related_name='old_changes')
+    new_product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True, related_name='new_changes')
+    change_type = models.CharField(max_length=20, choices=CHANGE_TYPES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    effective_date = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Store additional change details
+    proration_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    schedule_id = models.CharField(max_length=255, null=True, blank=True)  # Stripe subscription schedule ID
+    metadata = models.JSONField(null=True, blank=True)
+    
+    class Meta:
+        db_table = 'subscription_changes'
+        ordering = ['-created_at']
+        
+    def __str__(self):
+        return f"{self.change_type.title()} - {self.user_email} - {self.status}"
+
+class RetentionOffer(models.Model):
+    """Track retention offers presented to users attempting to downgrade"""
+    OFFER_TYPES = [
+        ('discount', 'Discount'),
+        ('free_month', 'Free Month'),
+        ('feature_unlock', 'Feature Unlock'),
+        ('custom', 'Custom Offer'),
+    ]
+    
+    id = models.AutoField(primary_key=True)
+    user_email = models.EmailField()
+    stripe_subscription_id = models.CharField(max_length=255)
+    offer_type = models.CharField(max_length=50, choices=OFFER_TYPES)
+    offer_details = models.JSONField()  # Store offer configuration
+    accepted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    
+    # Track offer outcome
+    coupon_id = models.CharField(max_length=255, null=True, blank=True)
+    stripe_promotion_code = models.CharField(max_length=255, null=True, blank=True)
+    
+    class Meta:
+        db_table = 'retention_offers'
+        ordering = ['-created_at']
+        
+    def __str__(self):
+        status = "Accepted" if self.accepted else "Pending"
+        return f"{self.offer_type} - {self.user_email} - {status}"
+
 class PaymentLog(models.Model):
     """Log for payment-related events"""
     id = models.AutoField(primary_key=True)
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, null=True, blank=True)
     subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, null=True, blank=True)
+    subscription_change = models.ForeignKey(SubscriptionChange, on_delete=models.CASCADE, null=True, blank=True)  # NEW
     event_type = models.CharField(max_length=255)
     data = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

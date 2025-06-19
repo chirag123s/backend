@@ -1,3 +1,4 @@
+# payments/urls.py
 
 from django.urls import path
 from .views import (
@@ -6,7 +7,13 @@ from .views import (
     SubscriptionManagementView,
     RefreshSubscriptionStatusView,
     PaymentSuccessCallbackView,
-    stripe_webhook
+    stripe_webhook,
+    # NEW: Subscription change views
+    SubscriptionChangeView,
+    RetentionOfferView,
+    RetentionOfferAcceptView,
+    SubscriptionChangesHistoryView,
+    UserRetentionOffersView,
 )
 
 urlpatterns = [
@@ -18,13 +25,20 @@ urlpatterns = [
     # Products
     path('products/', ProductListView.as_view(), name='product-list'),
     
-    # subscription endpoints (email-based)
+    # Subscription endpoints (email-based)
     path('user/refresh-subscription/', RefreshSubscriptionStatusView.as_view(), name='refresh-subscription-status'),  
     path('user/direct-stripe-subscription/', DirectStripeSubscriptionView.as_view(), name='direct-stripe-subscription'),
     
     # Subscription management 
     path('subscriptions/manage/', SubscriptionManagementView.as_view(), name='subscription-manage'),
+    
+    # NEW: Subscription change endpoints
+    path('subscriptions/change-plan/', SubscriptionChangeView.as_view(), name='subscription-change-plan'),
+    path('subscriptions/retention-offer/', RetentionOfferView.as_view(), name='retention-offer'),
+    path('subscriptions/retention-offer/accept/', RetentionOfferAcceptView.as_view(), name='retention-offer-accept'),
+    path('subscriptions/changes/history/', SubscriptionChangesHistoryView.as_view(), name='subscription-changes-history'),
+    path('subscriptions/retention-offers/', UserRetentionOffersView.as_view(), name='user-retention-offers'),
+    
     # Webhooks 
     path('webhook/', stripe_webhook, name='stripe-webhook'),
-
 ]

@@ -1,6 +1,6 @@
 # payments/serializers.py
 from rest_framework import serializers
-from .models import Product, Customer, Payment, PaymentLog, Subscription
+from .models import Product, Customer, Payment, PaymentLog, Subscription, SubscriptionChange, RetentionOffer
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -32,6 +32,23 @@ class PaymentLogSerializer(serializers.ModelSerializer):
         model = PaymentLog
         fields = '__all__'
         read_only_fields = ('created_at',)
+
+# NEW SERIALIZERS FOR SUBSCRIPTION CHANGES
+
+class SubscriptionChangeSerializer(serializers.ModelSerializer):
+    old_product = ProductSerializer(read_only=True)
+    new_product = ProductSerializer(read_only=True)
+    
+    class Meta:
+        model = SubscriptionChange
+        fields = '__all__'
+        read_only_fields = ('created_at', 'completed_at')
+
+class RetentionOfferSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RetentionOffer
+        fields = '__all__'
+        read_only_fields = ('created_at', 'accepted_at')
 
 class CheckoutSessionCreateSerializer(serializers.Serializer):
     # Product selection - CHANGED: Now accepts string to handle Stripe product IDs
@@ -97,7 +114,9 @@ class SubscriptionManagementSerializer(serializers.Serializer):
         ('cancel', 'Cancel'),
         ('pause', 'Pause'),
         ('resume', 'Resume'),
-        ('update', 'Update')
+        ('update', 'Update'),
+        ('change_plan', 'Change Plan'),  # NEW
+        ('apply_retention', 'Apply Retention'),  # NEW
     ])
     cancel_at_period_end = serializers.BooleanField(required=False, default=True)
     new_price_id = serializers.CharField(max_length=255, required=False)
@@ -106,6 +125,46 @@ class SubscriptionManagementSerializer(serializers.Serializer):
         default='create_prorations',
         required=False
     )
+    # NEW: For retention offers
+    offer_details = serializers.JSONField(required=False)
+
+# NEW SERIALIZERS FOR PLAN CHANGES
+
+class PlanChangeRequestSerializer(serializers.Serializer):
+    """Serializer for plan change requests"""
+    subscription_id = serializers.CharField(max_length=255)
+    new_price_id = serializers.CharField(max_length=255)
+    change_type = serializers.ChoiceField(choices=[('upgrade', 'Upgrade'), ('downgrade', 'Downgrade')])
+    user_email = serializers.EmailField()
+    metadata = serializers.JSONField(required=False)
+    
+    def validate(self, data):
+        if not data.get('subscription_id'):
+            raise serializers.ValidationError("subscription_id is required")
+        if not data.get('new_price_id'):
+            raise serializers.ValidationError("new_price_id is required")
+        if not data.get('user_email'):
+            raise serializers.ValidationError("user_email is required")
+        return data
+
+class RetentionOfferRequestSerializer(serializers.Serializer):
+    """Serializer for retention offer requests"""
+    subscription_id = serializers.CharField(max_length=255)
+    user_email = serializers.EmailField()
+    current_plan_type = serializers.CharField(max_length=50, required=False)
+    
+    def validate(self, data):
+        if not data.get('subscription_id'):
+            raise serializers.ValidationError("subscription_id is required")
+        if not data.get('user_email'):
+            raise serializers.ValidationError("user_email is required")
+        return data
+
+class RetentionOfferAcceptSerializer(serializers.Serializer):
+    """Serializer for accepting retention offers"""
+    subscription_id = serializers.CharField(max_length=255)
+    offer_id = serializers.IntegerField()
+    user_email = serializers.EmailField()
 
 class UserSubscriptionStatusSerializer(serializers.Serializer):
     """Serializer for user subscription status response"""
@@ -113,4 +172,7 @@ class UserSubscriptionStatusSerializer(serializers.Serializer):
     plan_type = serializers.CharField(max_length=50)
     plan_name = serializers.CharField(max_length=255)
     subscriptions = SubscriptionSerializer(many=True)
-    customer = CustomerSerializer(allow_null=True)
+    current_subscription = SubscriptionSerializer(allow_null=True)
+    # NEW: Include pending changes
+    pending_changes = SubscriptionChangeSerializer(many=True, required=False)
+    recent_offers = RetentionOfferSerializer(many=True, required=False)

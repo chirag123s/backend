@@ -1,4 +1,3 @@
-# payments/views.py
 from datetime import datetime, timezone
 import stripe
 import logging
@@ -7,17 +6,24 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from django.utils import timezone as django_timezone
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Product, Payment, Subscription, Customer 
+from .models import Product, Payment, Subscription, Customer, SubscriptionChange, RetentionOffer
 from .serializers import (
     ProductSerializer, PaymentSerializer, SubscriptionSerializer,
-    CheckoutSessionCreateSerializer, SubscriptionManagementSerializer
+    CheckoutSessionCreateSerializer, SubscriptionManagementSerializer,
+    PlanChangeRequestSerializer, RetentionOfferRequestSerializer, 
+    RetentionOfferAcceptSerializer, SubscriptionChangeSerializer,
+    RetentionOfferSerializer
 )
 from .services import StripeService
+
+logger = logging.getLogger(__name__)
+stripe_service = StripeService()
 
 logger = logging.getLogger(__name__)
 stripe_service = StripeService()
@@ -41,66 +47,6 @@ class CreateCheckoutSession(APIView):
             logger.error(f"Error creating checkout session: {str(e)}", exc_info=True)
             return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-class PaymentStatusView(APIView):
-    """Retrieve payment status from Stripe using session ID"""
-
-    def get(self, request):
-        session_id = request.query_params.get('session_id')
-        if not session_id:
-            return Response({'error': 'Session ID is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            # Fetch session from Stripe
-            stripe.api_key = settings.STRIPE_SECRET_KEY
-            session = stripe.checkout.Session.retrieve(session_id)
-            
-            # Get local payment record
-            local_payment = Payment.objects.filter(session_id=session_id).first()
-            
-            status_info = {
-                'uuid': str(local_payment.uuid) if local_payment else None,
-                'session_id': session.id,
-                'payment_status': session.payment_status,
-                'payment_intent': session.payment_intent,
-                'subscription': session.subscription,
-                'customer_email': session.customer_email,
-                'amount_total': session.amount_total,
-                'currency': session.currency,
-                'mode': session.mode,
-                'created_at': local_payment.created_at.isoformat() if local_payment else None,
-            }
-
-            # Add subscription details if it's a subscription payment
-            if session.mode == 'subscription' and session.subscription:
-                try:
-                    subscription = stripe.Subscription.retrieve(session.subscription)
-                    local_subscription = Subscription.objects.filter(
-                        stripe_subscription_id=session.subscription
-                    ).first()
-                    
-                    status_info['subscription_details'] = {
-                        'id': subscription.id,
-                        'status': subscription.status,
-                        'current_period_start': subscription.current_period_start,
-                        'current_period_end': subscription.current_period_end,
-                        'cancel_at_period_end': subscription.cancel_at_period_end,
-                        'trial_start': subscription.trial_start,
-                        'trial_end': subscription.trial_end,
-                        'local_subscription_id': local_subscription.id if local_subscription else None,
-                    }
-                except Exception as e:
-                    logger.warning(f"Could not retrieve subscription details: {str(e)}")
-
-            return Response(status_info)
-        except stripe.error.InvalidRequestError:
-            logger.warning(f"Stripe session not found: {session_id}")
-            return Response({'error': 'Session not found in Stripe'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            logger.error(f"Error retrieving payment status: {str(e)}", exc_info=True)
-            return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 class ProductListView(APIView):
     """List all active products"""
 
@@ -120,7 +66,7 @@ class ProductListView(APIView):
             return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class SubscriptionManagementView(APIView):
-    """Manage subscription operations (cancel, pause, resume, update)"""
+    """Enhanced subscription management with plan changes"""
 
     def post(self, request):
         serializer = SubscriptionManagementSerializer(data=request.data)
@@ -148,12 +94,7 @@ class SubscriptionManagementView(APIView):
 
             return Response({
                 'status': 'success',
-                'subscription': {
-                    'id': result.id,
-                    'status': result.status,
-                    'cancel_at_period_end': result.cancel_at_period_end,
-                    'current_period_end': result.current_period_end,
-                }
+                'result': result
             })
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -498,107 +439,344 @@ class EmailBasedStripeSync(APIView):
                 'error': 'An unexpected error occurred'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-class DirectStripeSubscriptionView(APIView):
-    """Checks all Stripe customers with matching email and returns active subscription info."""
+class SubscriptionChangeView(APIView):
+    """Handle subscription plan changes (upgrades/downgrades)"""
+    
+    def post(self, request):
+        serializer = PlanChangeRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            result = stripe_service.subscription_change_service.handle_plan_change(
+                subscription_id=serializer.validated_data['subscription_id'],
+                new_price_id=serializer.validated_data['new_price_id'],
+                change_type=serializer.validated_data['change_type'],
+                user_email=serializer.validated_data['user_email'],
+                metadata=serializer.validated_data.get('metadata')
+            )
+            
+            return Response(result, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            logger.warning(f"Plan change validation error: {str(e)}")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Plan change error: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'Failed to change subscription plan'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class RetentionOfferView(APIView):
+    """Handle retention offers for downgrade attempts"""
+    
+    def post(self, request):
+        serializer = RetentionOfferRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            offers = stripe_service.subscription_change_service.generate_retention_offers(
+                subscription_id=serializer.validated_data['subscription_id'],
+                user_email=serializer.validated_data['user_email'],
+                current_plan_type=serializer.validated_data.get('current_plan_type')
+            )
+            
+            return Response({
+                'offers': offers,
+                'subscription_id': serializer.validated_data['subscription_id'],
+                'message': 'Retention offers generated successfully'
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Retention offer error: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'Failed to generate retention offers'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class RetentionOfferAcceptView(APIView):
+    """Accept a retention offer"""
+    
+    def post(self, request):
+        serializer = RetentionOfferAcceptSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            result = stripe_service.subscription_change_service.apply_retention_offer(
+                subscription_id=serializer.validated_data['subscription_id'],
+                offer_id=serializer.validated_data['offer_id'],
+                user_email=serializer.validated_data['user_email']
+            )
+            
+            return Response(result, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            logger.warning(f"Retention offer acceptance error: {str(e)}")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Retention offer acceptance error: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'Failed to apply retention offer'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SubscriptionChangesHistoryView(APIView):
+    """Get subscription change history for a user"""
+    
     def get(self, request):
         user_email = request.query_params.get('user_email')
-
+        subscription_id = request.query_params.get('subscription_id')
+        
         if not user_email:
-            return Response({'error': 'user_email is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-
+            return Response({
+                'error': 'user_email is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         try:
-            # Find all customers with the provided email
-            customers = stripe.Customer.list(email=user_email)
+            queryset = SubscriptionChange.objects.filter(user_email=user_email)
+            
+            if subscription_id:
+                queryset = queryset.filter(stripe_subscription_id=subscription_id)
+            
+            changes = queryset.order_by('-created_at')
+            serializer = SubscriptionChangeSerializer(changes, many=True)
+            
+            return Response({
+                'changes': serializer.data,
+                'count': changes.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error fetching subscription changes: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'Failed to fetch subscription changes'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            if not customers.data:
-                return Response({
+class UserRetentionOffersView(APIView):
+    """Get retention offers for a user"""
+    
+    def get(self, request):
+        user_email = request.query_params.get('user_email')
+        subscription_id = request.query_params.get('subscription_id')
+        
+        if not user_email:
+            return Response({
+                'error': 'user_email is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            queryset = RetentionOffer.objects.filter(user_email=user_email)
+            
+            if subscription_id:
+                queryset = queryset.filter(stripe_subscription_id=subscription_id)
+            
+            offers = queryset.order_by('-created_at')
+            serializer = RetentionOfferSerializer(offers, many=True)
+            
+            return Response({
+                'offers': serializer.data,
+                'count': offers.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error fetching retention offers: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'Failed to fetch retention offers'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+class DirectStripeSubscriptionView(APIView):
+    """Enhanced subscription view with pending changes and offers"""
+    
+    def get(self, request):
+        user_email = request.query_params.get('user_email')
+        
+        if not user_email:
+            return Response({
+                'error': 'user_email parameter is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            result = self._get_enhanced_subscription_status(user_email)
+            return Response(result)
+            
+        except Exception as e:
+            logger.error(f"Error fetching subscription status: {str(e)}", exc_info=True)
+            return Response({
+                'error': 'Failed to fetch subscription status'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _get_enhanced_subscription_status(self, user_email):
+        """Get subscription status with pending changes and offers"""
+        try:
+            # Get customer and subscriptions (existing logic)
+            customer = Customer.objects.filter(email=user_email).first()
+            
+            if not customer or not customer.stripe_customer_id:
+                return {
                     'has_subscription': False,
                     'plan_type': 'free',
-                    'plan_name': 'Free Plan'
-                })
-
-            for customer in customers.data:
-                logging.warning(f"Checking subscriptions for customer ID: {customer.id}")
-
-                subscriptions = stripe.Subscription.list(customer=customer.id, status='active')
-
-                
-
-                if subscriptions.data:
-                    stripe_sub = subscriptions.data[0]
-
-                    currency = 'AUD'
-                    plan_name = 'Unknown Plan'
-                    product=''
-
-                    logging.warning(f"subscription details {stripe_sub.plan.metadata}")
-
-                    try:
-                        if stripe_sub.plan and stripe_sub.plan.metadata:
-                            plan_obj = stripe_sub.plan
-                            currency = plan_obj.currency.upper() if plan_obj.currency else 'AUD'
-                            try:
-                                    plan_name = plan_obj.metadata.product_name,
-                                    product = stripe.Product.retrieve(plan_obj.product)
-                                    logging.warning(f"Checking subscriptions for customer ID: {product}")
-                            except Exception as e:
-                                    logging.warning(f"Could not retrieve product info: {e}")
-
-                    except Exception as e:
-                        logging.error(f"Error extracting price or product info: {e}")
-
-                   
-
-                    current_subscription = {
-                        'stripe_subscription_id': stripe_sub.id,
-                        'customer_id': customer.id,
-                        'status': stripe_sub.status,
-                        'plan_name': plan_name[0],
-                        'currency': currency
-                    }
-
-                    return Response({
-                        'has_subscription': True,
-                        'plan_type': product.metadata.tier,
-                        'plan_name': product.metadata.plan_slug,
-                        'current_subscription': current_subscription,
-                        'customer_email': user_email,
-                        'product_details': product
-                    })
-
-            # No active subscriptions across all customers
-            return Response({
+                    'plan_name': 'Free Plan',
+                    'subscriptions': [],
+                    'current_subscription': None,
+                    'pending_changes': [],
+                    'recent_offers': []
+                }
+            
+            # Sync with Stripe and get subscriptions
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            stripe_subscriptions = stripe.Subscription.list(
+                customer=customer.stripe_customer_id,
+                status='all'
+            )
+            
+            # Update local subscriptions
+            updated_count = 0
+            active_subscriptions = []
+            
+            for stripe_sub in stripe_subscriptions.data:
+                local_sub = stripe_service._update_local_subscription(stripe_sub)
+                if local_sub:
+                    updated_count += 1
+                if stripe_sub.status in ['active', 'trialing', 'past_due']:
+                    active_subscriptions.append(local_sub)
+            
+            # Get basic subscription info
+            has_active = len(active_subscriptions) > 0
+            current_subscription = active_subscriptions[0] if active_subscriptions else None
+            
+            plan_type = 'free'
+            plan_name = 'Free Plan'
+            
+            if current_subscription and current_subscription.product:
+                product_price = float(current_subscription.product.price)
+                if product_price >= 29.99:
+                    plan_type = 'pro'
+                    plan_name = 'Full Insight Pro'
+                elif product_price >= 14.99:
+                    plan_type = 'core'
+                    plan_name = 'CORE Advantage'
+                elif product_price >= 6.99:
+                    plan_type = 'smart'
+                    plan_name = 'Smart Choice'
+            
+            # Get pending changes
+            pending_changes = []
+            if current_subscription:
+                changes = SubscriptionChange.objects.filter(
+                    stripe_subscription_id=current_subscription.stripe_subscription_id,
+                    status='pending'
+                ).order_by('-created_at')
+                pending_changes = SubscriptionChangeSerializer(changes, many=True).data
+            
+            # Get recent retention offers
+            recent_offers = []
+            offers = RetentionOffer.objects.filter(
+                user_email=user_email,
+                created_at__gte=django_timezone.now() - django_timezone.timedelta(days=30)
+            ).order_by('-created_at')[:5]
+            recent_offers = RetentionOfferSerializer(offers, many=True).data
+            
+            return {
+                'has_subscription': has_active,
+                'plan_type': plan_type,
+                'plan_name': plan_name,
+                'subscriptions': [SubscriptionSerializer(sub).data for sub in active_subscriptions],
+                'current_subscription': SubscriptionSerializer(current_subscription).data if current_subscription else None,
+                'pending_changes': pending_changes,
+                'recent_offers': recent_offers,
+                'sync_info': {
+                    'subscriptions_updated': updated_count,
+                    'stripe_subscriptions_found': len(stripe_subscriptions.data)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching enhanced subscription status: {str(e)}", exc_info=True)
+            return {
                 'has_subscription': False,
                 'plan_type': 'free',
                 'plan_name': 'Free Plan',
-                'customers_checked': len(customers.data)
-            })
+                'subscriptions': [],
+                'current_subscription': None,
+                'pending_changes': [],
+                'recent_offers': [],
+                'error': 'Failed to sync with Stripe'
+            }
 
+class PaymentStatusView(APIView):
+    """Retrieve payment status from Stripe using session ID"""
+
+    def get(self, request):
+        session_id = request.query_params.get('session_id')
+        if not session_id:
+            return Response({'error': 'Session ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Fetch session from Stripe
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            session = stripe.checkout.Session.retrieve(session_id)
+            
+            # Get local payment record
+            local_payment = Payment.objects.filter(session_id=session_id).first()
+            
+            status_info = {
+                'uuid': str(local_payment.uuid) if local_payment else None,
+                'session_id': session.id,
+                'payment_status': session.payment_status,
+                'payment_intent': session.payment_intent,
+                'subscription': session.subscription,
+                'customer_email': session.customer_email,
+                'amount_total': session.amount_total,
+                'currency': session.currency,
+                'mode': session.mode,
+                'created_at': local_payment.created_at.isoformat() if local_payment else None,
+            }
+
+            # Add subscription details if it's a subscription payment
+            if session.mode == 'subscription' and session.subscription:
+                try:
+                    subscription = stripe.Subscription.retrieve(session.subscription)
+                    local_subscription = Subscription.objects.filter(
+                        stripe_subscription_id=session.subscription
+                    ).first()
+                    
+                    status_info['subscription_details'] = {
+                        'id': subscription.id,
+                        'status': subscription.status,
+                        'current_period_start': subscription.current_period_start,
+                        'current_period_end': subscription.current_period_end,
+                        'cancel_at_period_end': subscription.cancel_at_period_end,
+                        'trial_start': subscription.trial_start,
+                        'trial_end': subscription.trial_end,
+                        'local_subscription_id': local_subscription.id if local_subscription else None,
+                    }
+                except Exception as e:
+                    logger.warning(f"Could not retrieve subscription details: {str(e)}")
+
+            return Response(status_info)
+        except stripe.error.InvalidRequestError:
+            logger.warning(f"Stripe session not found: {session_id}")
+            return Response({'error': 'Session not found in Stripe'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            logging.error(f"Stripe API error: {e}", exc_info=True)
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.error(f"Error retrieving payment status: {str(e)}", exc_info=True)
+            return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+# Enhanced webhook handler
 @csrf_exempt
-@require_POST
 def stripe_webhook(request):
-    """Stripe webhook endpoint to handle events"""
-
+    """Enhanced webhook handler with subscription change events"""
     payload = request.body
     sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
 
-    if not sig_header:
-        logger.error("Missing Stripe signature header")
-        return HttpResponse(status=400)
-
     try:
-        stripe_service.handle_webhook_event(payload, sig_header)
+        result = stripe_service.handle_webhook_event(payload, sig_header)
         return HttpResponse(status=200)
-    except stripe.error.SignatureVerificationError as e:
-        logger.error(f"Invalid Stripe signature: {str(e)}", exc_info=True)
+    except ValueError:
+        logger.error("Invalid payload in Stripe webhook")
+        return HttpResponse(status=400)
+    except stripe.error.SignatureVerificationError:
+        logger.error("Invalid signature in Stripe webhook")
         return HttpResponse(status=400)
     except Exception as e:
-        logger.error(f"Stripe webhook processing error: {str(e)}", exc_info=True)
+        logger.error(f"Error processing Stripe webhook: {str(e)}", exc_info=True)
         return HttpResponse(status=500)
