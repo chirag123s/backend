@@ -325,14 +325,6 @@ class PaymentSuccessCallbackView(APIView):
                 'plan_name': 'Free Plan'
             }
 
-class StripeConfigView(APIView):
-    """Expose Stripe publishable key to the frontend"""
-
-    def get(self, request):
-        return Response({
-            'publishableKey': settings.STRIPE_PUBLISHABLE_KEY
-        })
-
 class RefreshSubscriptionStatusView(APIView):
     """
     OPTIMIZED: Refresh subscription from Stripe (email-based)
@@ -570,6 +562,8 @@ class DirectStripeSubscriptionView(APIView):
 
                     return Response({
                         'has_subscription': True,
+                        'plan_type': product.metadata.tier,
+                        'plan_name': product.metadata.plan_slug,
                         'current_subscription': current_subscription,
                         'customer_email': user_email,
                         'product_details': product

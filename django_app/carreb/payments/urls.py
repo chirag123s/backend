@@ -2,7 +2,7 @@
 from django.urls import path
 from .views import (
     CreateCheckoutSession, DirectStripeSubscriptionView, PaymentStatusView,
-    ProductListView, StripeConfigView,
+    ProductListView, 
     SubscriptionManagementView,
     RefreshSubscriptionStatusView,
     PaymentSuccessCallbackView,
@@ -20,14 +20,10 @@ urlpatterns = [
     
     # subscription endpoints (email-based)
     path('user/refresh-subscription/', RefreshSubscriptionStatusView.as_view(), name='refresh-subscription-status'),  
-    path('user/subscription-direct/', DirectStripeSubscriptionView.as_view(), name='direct-stripe'),
+    path('user/direct-stripe-subscription/', DirectStripeSubscriptionView.as_view(), name='direct-stripe-subscription'),
     
     # Subscription management 
     path('subscriptions/manage/', SubscriptionManagementView.as_view(), name='subscription-manage'),
-    
-    # Configuration
-    path('config/', StripeConfigView.as_view(), name='stripe-config'),
-    
     # Webhooks 
     path('webhook/', stripe_webhook, name='stripe-webhook'),
 
