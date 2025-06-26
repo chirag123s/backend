@@ -4,7 +4,7 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 
-from .views import ParseCDGG, StateListView, GetCarMakesListView, GetCarModelListView, GetCarYearListView, GetCarEngineTypeListView, CarVariantListView, CarSeriesListView, CarMatchesListView, CarSuggestionListView, GetCarMatchView, GetCarMatchBySIDView
+from .views import CoreRatingCalculatorView, ParseCDGG, StateListView, GetCarMakesListView, GetCarModelListView, GetCarYearListView, GetCarEngineTypeListView, CarVariantListView, CarSeriesListView, CarMatchesListView, CarSuggestionListView, GetCarMatchView, GetCarMatchBySIDView, VehicleEmissionsCalculatorView,VehicleFinanceCalculatorView, VehicleNoFinanceCalculatorView
 from . import views
 
 schema_view = get_schema_view(
@@ -36,6 +36,12 @@ urlpatterns = [
     path('car/suggestions/', CarSuggestionListView.as_view()),
     path('car/match/', GetCarMatchView.as_view()),
     path('car/match/by-id/', GetCarMatchBySIDView.as_view()),
+    path('car/calculate-finance-py/', VehicleFinanceCalculatorView.as_view(), name='calculate-finance-py'),
+    path('car/calculate-no-finance-py/', VehicleNoFinanceCalculatorView.as_view(), name='calculate-no-finance-py'),
+    path('car/calculate-emissions-py/', VehicleEmissionsCalculatorView.as_view(), name='calculate-emissions-py'),
+    path('car/calculate-core-rating-py/', CoreRatingCalculatorView.as_view(), name='calculate-core-rating-py'),
+
+
 
     path('payment/', include('payments.urls')),
 
