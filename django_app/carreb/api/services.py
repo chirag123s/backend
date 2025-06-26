@@ -55,6 +55,6 @@ def ParseCarDetailsFromGG(file):
         data_to_insert.append(data)
 
     # Bulk insert for better performance
-    CarDetail.objects.bulk_create(data_to_insert)
+    CarDetails.objects.bulk_create(data_to_insert)
     return {"message": f"{len(data_to_insert)} records successfully stored."}
 

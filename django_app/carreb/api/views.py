@@ -34,7 +34,7 @@ class StateListView(APIView):
 class GetCarMakesListView(APIView):
     def get(self, request):
 
-        popular_cars = CarMakes.objects.filter(popular=True).values("car_make_id", "name").order_by('name')
+        popular_cars = CarMakes.objects.filter(is_popular=True).values("car_make_id", "name").order_by('name')
         all_cars = CarMakes.objects.values("car_make_id", "name").order_by('name')
 
         # Replace 'car_make_id' with a random UUID

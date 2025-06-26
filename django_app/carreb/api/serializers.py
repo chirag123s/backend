@@ -1,9 +1,29 @@
 from rest_framework import serializers
-from .models import CarMakes, CarDetails, States, Vehicles, CarSearchLog, VehicleImages
+from .models import CarMakes, CarModels, CarVariants, CarPricing, CarDataRaw, CarDetails, CarBodyCost, States, Vehicles, CarSearchLog, VehicleImages, FuelRetailPrice
 
-class CampaignsSerializer(serializers.ModelSerializer):
+class CarMakesSerializer(serializers.ModelSerializer):
     class Meta:
         model = CarMakes
+        fields = '__all__'
+
+class CarVariantsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CarVariants
+        fields = '__all__'
+
+class CarModelsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CarModels
+        fields = '__all__'
+
+class CarPricingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CarPricing
+        fields = '__all__'
+
+class CarDataRawSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CarDataRaw
         fields = '__all__'
 
 class CarDetailsSerializer(serializers.ModelSerializer):
@@ -44,9 +64,40 @@ class CarSearchLogSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
 
-
-
 class VehicleImagesSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleImages
         fields = '__all__'
+
+class CarBodyCostSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CarBodyCost
+        fields = ['id',
+            'id',
+            'type',
+            'insurance_cost_comprehensive_annual_min',
+            'insurance_cost_comprehensive_annual_max',
+            'tyre_change_cost_per_tyre_min',
+            'tyre_change_cost_per_tyre_max',
+            'source'
+        ]
+
+class FuelRetailPriceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FuelRetailPrice
+        fields = ['id',
+            'id',
+            'fuel_type',
+            'year_type',
+            'year_from',
+            'year_to',
+            'nsw',
+            'qld',
+            'sa',
+            'wa',
+            'nt',
+            'tas',
+            'act',
+            'national',
+            'is_active'
+        ]
