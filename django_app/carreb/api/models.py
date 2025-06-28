@@ -309,3 +309,14 @@ class FuelRetailPrice(models.Model):
 
     def __str__(self):
         return f"{self.id} {self.fuel_type} {self.year_type} {self.year_from} {self.year_to} {self.nsw} {self.vic} {self.qld} {self.sa} {self.wa} {self.nt} {self.tas} {self.act} {self.national}"
+    
+class ElectricityGridEmissions(models.Model):
+    state = models.CharField(max_length=50, unique=True)
+    emissions_factor_kg_per_kwh = models.DecimalField(max_digits=10, decimal_places=4)
+
+    class Meta:
+        db_table = 'electricity_grid_emissions'
+
+    def __str__(self):
+        return self.state
+

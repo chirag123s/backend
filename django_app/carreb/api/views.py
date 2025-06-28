@@ -11,7 +11,8 @@ from rest_framework.decorators import api_view
 from .models import CarMakes, CarDetails, States, Vehicles, CarSearchLog, VehicleImages
 from .serializers import CarDetailsSerializer, VehiclesSerializer, CarSearchLogSerializer
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
-from .services import calculate_vehicle_cost_with_finance, calculate_vehicle_cost_no_finance
+from calc_app.services.car_calculations import CarCalculationsProcessor
+
 
 
 class ParseCDGG(APIView):
@@ -385,8 +386,6 @@ class GetCarMatchBySIDView(APIView):
         
         return Response({"status": response, 'data': data }, status=status.HTTP_200_OK)
 
-
-# Add this new view class
 class VehicleFinanceCalculatorView(APIView):
     def post(self, request, *args, **kwargs):
         # You should implement a serializer for production code to validate this data
@@ -420,13 +419,50 @@ class VehicleFinanceCalculatorView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
+class VehicleFinanceCalculatorView(APIView):
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        
+        # Instantiate the calculator
+        calculator = CarCalculationsProcessor()
+
+        try:
+            # Call the method from the processor class
+            result = calculator._calculate_vehicle_cost_with_finance(
+                variant_id=data.get('variant_id'),
+                state=data.get('state'),
+                kilometers_per_annum=data.get('kilometers_per_annum', 17000),
+                off_grid_energy_percent=data.get('off_grid_energy_percent', 20.0),
+                finance_type=data.get('finance_type'),
+                deposit=float(data.get('deposit')),
+                trade_in_value=float(data.get('trade_in_value')),
+                interest_rate_apr=float(data.get('interest_rate_apr')),
+                loan_term_months=int(data.get('loan_term_months')),
+                balloon_payment_percent=float(data.get('balloon_payment_percent')),
+                loan_establishment_fee=float(data.get('loan_establishment_fee')),
+                admin_fee_monthly=float(data.get('admin_fee_monthly')),
+                dealer_incentive=float(data.get('dealer_incentive'))
+            )
+            return Response(result, status=status.HTTP_200_OK)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"Calculation Error: {e}")
+            return Response(
+                {"error": "An internal error occurred during calculation."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class VehicleNoFinanceCalculatorView(APIView):
     def post(self, request, *args, **kwargs):
         data = request.data
+        
+        # Instantiate the calculator
+        calculator = CarCalculationsProcessor()
 
         try:
-            result = calculate_vehicle_cost_no_finance(
+            # Call the method from the processor class
+            result = calculator._calculate_vehicle_cost_no_finance(
                 variant_id=data.get('variant_id'),
                 state=data.get('state'),
                 kilometers_per_annum=data.get('kilometers_per_annum', 17000),
@@ -442,42 +478,27 @@ class VehicleNoFinanceCalculatorView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-class VehicleEmissionsCalculatorView(APIView):
-    def post(self, request, *args, **kwargs):
-        data = request.data
-        try:
-            results = calculate_vehicle_emissions(
-                vehicle_id=data.get('vehicle_id'),
-                make=data.get('make'),
-                model=data.get('model'),
-                state=data.get('state'),
-                annual_km=data.get('annual_km'),
-                drivetrain=data.get('drivetrain'),
-                year=data.get('year')
-            )
-            return Response(results, status=status.HTTP_200_OK)
-        except Exception as e:
-            print(f"Calculation Error: {e}")
-            return Response(
-                {"error": "An internal error occurred during calculation."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        
+# The VehicleEmissionsCalculatorView is no longer needed as emissions are
+# part of the main cost calculation. You can remove it if it's not used elsewhere.
+# If you still need a separate emissions calculator, it should also be a method in the processor.
+
 class CoreRatingCalculatorView(APIView):
     def post(self, request, *args, **kwargs):
         data = request.data
-        try:
-            # Get the boolean flag, default to False if not provided
-            with_finance_flag = data.get('with_finance', False)
+        
+        # Instantiate the calculator
+        calculator = CarCalculationsProcessor()
 
-            results = calculate_core_rating(
+        try:
+            # Call the method from the processor class
+            result = calculator._calculate_core_rating(
                 variant_id=data.get('variant_id'),
                 state=data.get('state'),
-                kilometers_per_annum=data.get('kilometers_per_annum'),
-                off_grid_energy_percent=data.get('off_grid_energy_percent'),
-                with_finance=with_finance_flag
+                kilometers_per_annum=data.get('kilometers_per_annum', 17000),
+                off_grid_energy_percent=data.get('off_grid_energy_percent', 20.0),
+                with_finance=data.get('with_finance', False)
             )
-            return Response(results, status=status.HTTP_200_OK)
+            return Response(result, status=status.HTTP_200_OK)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
